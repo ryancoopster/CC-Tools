@@ -42,11 +42,9 @@ Match defaults to **Export list only**, which writes a CSV of every mismatch and
 
 Normalise has a **Preview only** checkbox that reports what would change without touching the drawing.
 
-## Before you trust it on real work
+## Status: alpha
 
-The logic is covered by a test suite that runs the plug-in against a mock Vectorworks API — 77 targeted cases plus 2,500 randomised documents checking that links never silently break. But the suite cannot exercise Vectorworks itself, so a few behaviours remain unverified against a live document: undo granularity, whether circuits re-derive their cached names after a reset, and whether socket edits survive a parent reset.
-
-**Work on a copy of your drawing until you've seen a preview report you agree with.**
+This works and has been used on real drawings, but it is early software that edits your document directly. Keep a backup, and use **Preview only** or **Export list only** the first time you point a tool at an unfamiliar file.
 
 ## More detail
 
