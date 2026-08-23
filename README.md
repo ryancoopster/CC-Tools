@@ -13,8 +13,19 @@ Running **CC Tools** opens a launcher where you tick one or more tools. They alw
 | **Dump Fields** | Read-only diagnostic. Inventories every ConnectCAD record, finds every field holding a device name, flags stray whitespace, and probes which ConnectCAD scripting routines your setup exposes. |
 | **Normalise Names** | UPPERCASE and/or trim names and display tags, keeping all linked objects in sync. |
 | **Match Names and Display Tags** | Finds objects whose Name and Display Tag disagree and lets you choose which one wins — in bulk, or one at a time. |
+| **Spell Check** | Finds likely typos in free-text fields, and doubles as a reviewable find-and-replace across every ConnectCAD object. |
 
-Normalise runs before Match on purpose: uppercasing and trimming collapses every case-only and whitespace-only mismatch (`amp1` vs `AMP1`), so Match only asks about pairs that genuinely differ.
+Normalise runs before Match on purpose: uppercasing and trimming collapses every case-only and whitespace-only mismatch (`amp1` vs `AMP1`), so Match only asks about pairs that genuinely differ. Spell Check runs last, once every name has settled.
+
+### Spell Check, and why it isn't just a dictionary
+
+The vocabulary in a ConnectCAD drawing is `SWTCH`, `AVB Pri`, `EC-6A`, `pCON grey`, `NE8FDX-P6-B`. A dictionary would reject nearly all of it, so suspects are found from the drawing itself: a term used on one or two objects that is a single edit away from one used on many is probably a typo (`Cirrcuit` against `Circuit`). A system word list, where present, is used only to *spare* real words from suspicion — never to condemn a term for not being English.
+
+But frequency only tells you what is **consistent**, not what is **correct** — a mistake used everywhere looks exactly like house style. So the tool also exports the **full vocabulary list**: every term in the drawing with its usage counts and a blank `Replace with` column. Fill that in, run *Apply replacements*, and each one is applied globally. Multi-word entries act as a literal find-and-replace, which is the piece Vectorworks' own Find and Replace doesn't do for ConnectCAD objects.
+
+Every replacement is a **global token substitution**, not a per-object edit. Fixing a typo fixes it identically in the device, its tag, its equipment item and every reference at once — which is what keeps name-linked objects linked through the change.
+
+**Only free-text fields are touched:** names, display tags, user fields, and circuit labels. Dropdown values (connector, signal, cable type), library values (make, model, description), endpoint caches and room/rack references are all left alone — those are chosen from lists, not typed, so a "correction" there would just be a value the library rejects.
 
 Reports are written to `~/Documents/CC Tools/` under timestamped filenames, so runs never overwrite each other.
 
@@ -40,7 +51,9 @@ Match defaults to **Export list only**, which writes a CSV of every mismatch and
 - **Set Name = Display Tag** — renames the device and resyncs every reference to it.
 - **Review one at a time** — decide per device.
 
-Normalise has a **Preview only** checkbox that reports what would change without touching the drawing.
+Normalise and Spell Check both have a **Preview only** checkbox that reports what would change without touching the drawing.
+
+Spell Check keeps an ignore list at `~/Documents/CC Tools/spelling_ignore.txt`. Answering *Ignore always* adds a term to it, so a house abbreviation is only ever asked about once. Delete a line to start flagging it again.
 
 ## Status: alpha
 

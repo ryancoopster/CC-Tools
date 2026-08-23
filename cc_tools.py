@@ -4,6 +4,7 @@
 #   1. Dump Fields          - read-only diagnostic
 #   2. Normalise Names      - UPPERCASE and/or trim names & tags
 #   3. Match Names and Tags - reconcile Name vs Display Tag
+#   4. Spell Check          - fix typos without touching technical vocabulary
 #
 # WHY ONE FILE: Vectorworks creates one .vsm per menu command, and there is no
 # multi-command plug-in. Keeping the three tools as separate commands meant
@@ -70,6 +71,7 @@ ACTION_REVIEW    = 3
 TOOL_DUMP      = 0
 TOOL_NORMALISE = 1
 TOOL_MATCH     = 2
+TOOL_SPELL     = 3
 
 kOK    = 1
 kSetup = 12255
@@ -1595,10 +1597,701 @@ def tool_match_names_and_tags():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# TOOL 4: SPELL CHECK
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# The hard part is not finding misspellings, it is NOT flagging the jargon.
+# A real job's vocabulary is 'SWTCH', 'AVB Pri', 'EC-6A', 'pCON grey',
+# 'NE8FDX-P6-B' -- a dictionary would reject nearly all of it.
+#
+# So the primary signal comes from the drawing itself: a token used once that
+# is one edit away from a token used fifty times is a typo ('Cirrcuit' vs
+# 'Circuit'); a token used fifty times consistently is vocabulary, whether or
+# not it is a word. A system word list, when present, is used only to spare
+# real words from suspicion -- never to condemn a term for being absent.
+#
+# Corrections are GLOBAL TOKEN SUBSTITUTIONS, not per-object edits. Fixing
+# 'Cirrcuit' fixes it identically in every device, socket, equipment item and
+# reference at once, which is what keeps name-linked objects linked.
+
+SPELL_IGNORE_FILE = 'spelling_ignore.txt'
+SYSTEM_WORDLISTS = ['/usr/share/dict/words', '/usr/dict/words']
+
+# Only FREE-TEXT fields that are typed per instance. Everything else is
+# deliberately excluded:
+#
+#   dropdowns  - signal, connector, type, CircuitType, Cable Type, the symbol
+#                fields. These are library vocabularies chosen from a list, not
+#                typed, so a "misspelling" would be a value the library rejects.
+#   library    - make, model, description. These come from the device database
+#                and are identical across every instance of a device.
+#   caches     - Circuit Src_*/Dst_* mirror their endpoints and are refreshed on
+#                reset; editing them directly would be overwritten anyway.
+#   references - loc_room, loc_rack, Src_Room, Dst_Rack point at Room and Rack
+#                objects. Renaming one side only would break the reference.
+#
+# The 'user' fields are included because they are exactly what free-text-per-
+# instance means, even though what people put in them varies wildly.
+USER_FIELDS = [['user{}'.format(n)] for n in range(1, 9)]
+
+SPELL_FIELDS = {
+    'device': ([(DEVICE_NAME_FIELDS, True), (DEVICE_TAG_FIELDS, False)]
+               + [(f, False) for f in USER_FIELDS]),
+    'socket': ([(SOCKET_NAME_FIELDS, True), (SOCKET_TAG_FIELDS, False)]
+               + [(f, False) for f in USER_FIELDS]),
+    'equipment': ([(EQUIP_NAME_FIELDS, True)]
+                  + [(f, False) for f in USER_FIELDS]),
+    'circuit': [(['Label'], False), (['Number'], False), (['Cable'], False)],
+}
+
+# Tuning. Rarity is counted in OBJECTS, not field occurrences: one typo
+# typically appears in a device's name AND its tag AND its equipment item, so
+# counting raw occurrences makes a single mistake look like established usage.
+SPELL_MAX_RARE   = 3       # distinct objects carrying the token
+SPELL_MIN_COMMON = 4
+SPELL_MIN_RATIO  = 4       # correction must be this many times more common
+SPELL_MIN_LENGTH = 4       # shorter tokens are abbreviations far more often
+
+kFixIt, kSkipIt, kIgnoreAlways, kStopSpell = 1, 0, 2, 3
+
+ACTION_SPELL_EXPORT = 0
+ACTION_SPELL_VOCAB  = 1    # export every term for review, not just suspects
+ACTION_SPELL_REVIEW = 2
+ACTION_SPELL_APPLY  = 3    # apply the replacements typed into vocabulary.csv
+ACTION_SPELL_ALL    = 4
+
+
+# ─── Text utilities ──────────────────────────────────────────────────────────
+def split_tokens(text):
+    """Split into alternating separator / letter-run pieces.
+
+    Splitting on letter runs rather than whitespace means 'LAN_IN' yields
+    'LAN' and 'IN', and digits stay attached to nothing -- so 'SWTCH 4.01'
+    contributes only 'SWTCH'."""
+    pieces = []
+    current = ''
+    current_is_alpha = None
+    for ch in text:
+        is_alpha = ch.isalpha()
+        if current_is_alpha is None or is_alpha == current_is_alpha:
+            current += ch
+        else:
+            pieces.append(current)
+            current = ch
+        current_is_alpha = is_alpha
+    if current:
+        pieces.append(current)
+    return pieces
+
+
+def is_word_token(piece):
+    return bool(piece) and piece[0].isalpha()
+
+
+def match_case(original, replacement):
+    """Give the replacement the casing pattern of the token it replaces.
+
+    Names are frequently uppercased by the Normalise tool, so a correction
+    learned from 'Circuit' must come back as 'CIRCUIT' when it is replacing
+    'CIRRCUIT'."""
+    if original.isupper():
+        return replacement.upper()
+    if original.islower():
+        return replacement.lower()
+    if original[:1].isupper() and original[1:].islower():
+        return replacement.capitalize()
+    return replacement
+
+
+def edit_distance(a, b, limit):
+    """Levenshtein distance, or None once it provably exceeds `limit`."""
+    if abs(len(a) - len(b)) > limit:
+        return None
+    previous = list(range(len(b) + 1))
+    for i, ca in enumerate(a, start=1):
+        current = [i]
+        best = i
+        for j, cb in enumerate(b, start=1):
+            cost = 0 if ca == cb else 1
+            value = min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + cost)
+            current.append(value)
+            if value < best:
+                best = value
+        if best > limit:
+            return None
+        previous = current
+    return previous[-1] if previous[-1] <= limit else None
+
+
+def load_wordlist():
+    """A system word list, if this machine has one. Optional by design.
+
+    Used only to EXCUSE a rare token from suspicion when it is a real word --
+    never to accuse one. Absence from the list means nothing here, since most
+    of the vocabulary is deliberately not English."""
+    for path in SYSTEM_WORDLISTS:
+        try:
+            with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                return set(line.strip().lower() for line in f if len(line.strip()) > 2)
+        except Exception:
+            continue
+    return set()
+
+
+def load_ignore_list():
+    """Tokens the user has permanently excused, one per line."""
+    path = os.path.join(BASE_FOLDER, SPELL_IGNORE_FILE)
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            return set(line.strip().lower() for line in f
+                       if line.strip() and not line.startswith('#'))
+    except Exception:
+        return set()
+
+
+def append_ignore_list(tokens):
+    """Persist newly excused tokens so later runs stay quiet about them."""
+    if not tokens:
+        return None
+    os.makedirs(BASE_FOLDER, exist_ok=True)
+    path = os.path.join(BASE_FOLDER, SPELL_IGNORE_FILE)
+    existing = load_ignore_list()
+    new = [t for t in sorted(set(tokens)) if t.lower() not in existing]
+    if not new:
+        return path
+    write_header = not os.path.exists(path)
+    with open(path, 'a', encoding='utf-8') as f:
+        if write_header:
+            f.write('# CC Tools - tokens to treat as correct vocabulary.\n')
+            f.write('# One per line. Delete a line to start flagging it again.\n')
+        for token in new:
+            f.write(token + '\n')
+    return path
+
+
+# ─── Harvesting ──────────────────────────────────────────────────────────────
+def spell_targets(handle):
+    """The (field, is_link_name) pairs this object exposes to the spellchecker."""
+    kind = classify(handle)
+    out = []
+    for candidates, is_link_name in SPELL_FIELDS.get(kind, []):
+        field = resolve_field(handle, candidates)
+        if field:
+            out.append((field, is_link_name))
+    return out
+
+
+def harvest_vocabulary(handles):
+    """Survey every token used across every spellcheckable field.
+
+    Returns (frequency, cased, objects):
+      frequency - total occurrences, used to judge which of two spellings wins
+      cased     - the most common casing, so corrections match house style
+      objects   - how many distinct OBJECTS use the token, which is the honest
+                  measure of how established it is. A typo in one device shows
+                  up in its name, its tag and its equipment item; counting
+                  occurrences would read that as three independent uses.
+    """
+    frequency = {}
+    objects = {}
+    cased = {}
+    for h in handles:
+        seen_here = set()
+        for field, _is_link in spell_targets(h):
+            value = read_field(h, field)
+            if not value or value in SENTINELS:
+                continue
+            for piece in split_tokens(value):
+                if not is_word_token(piece) or len(piece) < 2:
+                    continue
+                key = piece.lower()
+                frequency[key] = frequency.get(key, 0) + 1
+                seen_here.add(key)
+                cased.setdefault(key, {})
+                cased[key][piece] = cased[key].get(piece, 0) + 1
+        for key in seen_here:
+            objects[key] = objects.get(key, 0) + 1
+    best_cased = {}
+    for key, forms in cased.items():
+        best_cased[key] = max(forms.items(), key=lambda kv: kv[1])[0]
+    return frequency, best_cased, objects
+
+
+def find_suspects(frequency, cased, objects, ignore, wordlist):
+    """Rare tokens that look like typos of common ones.
+
+    Four things must hold before a token is accused, because a false positive
+    here rewrites an engineering drawing:
+      - it is rare, and its proposed correction is common
+      - the correction is several times more common than it
+      - it is not a real word, and not on the user's ignore list
+      - it is long enough that an edit-distance match means something
+    """
+    commons = [(t, c) for t, c in frequency.items() if c >= SPELL_MIN_COMMON]
+    commons.sort(key=lambda tc: -tc[1])
+
+    suspects = []
+    for token, count in sorted(frequency.items()):
+        if objects.get(token, count) > SPELL_MAX_RARE:
+            continue
+        if len(token) < SPELL_MIN_LENGTH:
+            continue
+        if token in ignore or token in wordlist:
+            continue
+
+        limit = 1 if len(token) < 7 else 2
+        best = None
+        for candidate, candidate_count in commons:
+            if candidate == token or candidate_count < count * SPELL_MIN_RATIO:
+                continue
+            if candidate in ignore:
+                pass          # still a valid correction target
+            distance = edit_distance(token, candidate, limit)
+            if distance is None:
+                continue
+            if best is None or distance < best['distance'] or (
+                    distance == best['distance'] and candidate_count > best['seen']):
+                best = {'suggestion': candidate, 'distance': distance,
+                        'seen': candidate_count}
+        if best:
+            suspects.append({
+                'token': token,
+                'shown': cased.get(token, token),
+                'count': count,
+                'objects': objects.get(token, count),
+                'suggestion': best['suggestion'],
+                'suggestion_shown': cased.get(best['suggestion'], best['suggestion']),
+                'seen': best['seen'],
+                'distance': best['distance'],
+                'source': 'drawing',
+            })
+    return suspects
+
+
+# ─── Applying corrections ────────────────────────────────────────────────────
+def apply_token_map(text, token_map):
+    """Rewrite whole-word tokens, leaving digits, punctuation and case intact."""
+    out = []
+    for piece in split_tokens(text):
+        replacement = token_map.get(piece.lower()) if is_word_token(piece) else None
+        out.append(match_case(piece, replacement) if replacement else piece)
+    return ''.join(out)
+
+
+def plan_spelling_edits(handles, token_map, phrase_map=None):
+    """Apply the correction map to every spellcheckable field in scope.
+
+    One map applied everywhere is what keeps linked objects linked: a device
+    and its equipment item carrying the same typo are corrected in the same
+    pass, to the same string, so the link survives the fix rather than being
+    repaired afterwards."""
+    edits = []
+    for h in handles:
+        kind = classify(h)
+        for field, is_link_name in spell_targets(h):
+            old = read_field(h, field)
+            if not old or old in SENTINELS:
+                continue
+            new = apply_phrase_map(old, phrase_map) if phrase_map else old
+            new = apply_token_map(new, token_map)
+            if new != old:
+                edits.append(make_edit(h, kind, field, old, new, is_link_name))
+    return edits
+
+
+# ─── Vocabulary list: spellcheck as find-and-replace ─────────────────────────
+#
+# Frequency tells you what is CONSISTENT, not what is CORRECT. A term used
+# fifty times identically is established usage -- which is exactly what an
+# entrenched mistake looks like. 'SWTCH' everywhere is not evidence it is
+# right, only that it is habitual.
+#
+# So alongside the suspect list there is a full vocabulary list: every term in
+# the drawing with its usage counts and a blank column to type a replacement
+# into. Fill it in a spreadsheet, run the tool again, and every replacement is
+# applied globally through the same link-preserving pipeline.
+
+VOCAB_FILE = 'vocabulary.csv'
+
+
+def export_vocabulary_csv(frequency, cased, objects, suspects):
+    """Write every term in the drawing with a blank 'Replace with' column.
+
+    Written twice: a timestamped copy for the record, and a fixed
+    `vocabulary.csv` which is the one to edit and the one the apply step
+    reads back, so there is never a question of which file is live."""
+    suspect_by_token = {s['token']: s for s in suspects}
+    rows = []
+    for token, count in frequency.items():
+        s = suspect_by_token.get(token)
+        rows.append([
+            cased.get(token, token),
+            count,
+            objects.get(token, count),
+            s['suggestion_shown'] if s else '',
+            '',
+        ])
+    # Rarest first: anything odd is far more likely to be near the top.
+    rows.sort(key=lambda r: (r[2], r[1], r[0].lower()))
+
+    header = ['Term', 'Times used', 'Objects', 'Suggested', 'Replace with']
+    os.makedirs(BASE_FOLDER, exist_ok=True)
+    stamped = os.path.join(BASE_FOLDER, 'vocabulary_{}.csv'.format(
+        time.strftime('%Y%m%d_%H%M%S')))
+    live = os.path.join(BASE_FOLDER, VOCAB_FILE)
+    for path in (stamped, live):
+        with open(path, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow(header)
+            writer.writerows(rows)
+    return live, len(rows)
+
+
+def load_vocabulary_csv():
+    """Read back the replacements typed into vocabulary.csv.
+
+    Returns (token_map, phrase_map, error). A Term containing a space is
+    treated as a literal phrase rather than a word token, so the same sheet
+    doubles as a find-and-replace for whole strings."""
+    path = os.path.join(BASE_FOLDER, VOCAB_FILE)
+    token_map = {}
+    phrase_map = {}
+    try:
+        with open(path, 'r', newline='', encoding='utf-8-sig') as f:
+            reader = csv.reader(f)
+            header = next(reader, None)
+            if not header or 'Replace with' not in header:
+                return {}, {}, 'no "Replace with" column in {}'.format(VOCAB_FILE)
+            term_i = header.index('Term')
+            repl_i = header.index('Replace with')
+            for row in reader:
+                if len(row) <= repl_i:
+                    continue
+                term = row[term_i].strip()
+                replacement = row[repl_i].strip()
+                if not term or not replacement or term == replacement:
+                    continue
+                if ' ' in term:
+                    phrase_map[term] = replacement
+                else:
+                    token_map[term.lower()] = replacement
+    except FileNotFoundError:
+        return {}, {}, '{} not found. Run "Export vocabulary list" first.'.format(
+            VOCAB_FILE)
+    except Exception as err:
+        return {}, {}, 'could not read {}: {}'.format(VOCAB_FILE, err)
+    return token_map, phrase_map, None
+
+
+def apply_phrase_map(text, phrase_map):
+    """Literal substring replacement, longest phrase first.
+
+    Longest-first matters: replacing 'Grid Patch' before 'Grid' stops a
+    shorter entry from eating the start of a longer one."""
+    for phrase in sorted(phrase_map, key=len, reverse=True):
+        if phrase in text:
+            text = text.replace(phrase, phrase_map[phrase])
+    return text
+
+
+# ─── Review ──────────────────────────────────────────────────────────────────
+def review_suspects(suspects):
+    """Walk the user through each suspected misspelling.
+
+    Returns (accepted, newly_ignored, aborted). 'Ignore always' answers the
+    user's real question -- it excuses every occurrence of that token now AND
+    in future runs, so a term like 'SWTCH' is only ever asked about once."""
+    accepted = {}
+    ignored = []
+
+    for index, suspect in enumerate(suspects, start=1):
+        question = 'Possible misspelling {} of {}'.format(index, len(suspects))
+        advice = (
+            '"{}"  appears {} time(s)\n'
+            '"{}"  appears {} time(s)\n\n'
+            'Change "{}" to "{}" everywhere?\n\n'
+            'Ignore always = treat "{}" as correct vocabulary from now on.'.format(
+                suspect['shown'], suspect['count'],
+                suspect['suggestion_shown'], suspect['seen'],
+                suspect['shown'], suspect['suggestion_shown'],
+                suspect['shown']))
+
+        answer = vs.AlertQuestion(question, advice, 1,
+                                  'Fix', 'Skip', 'Ignore always', 'Stop')
+        if answer == kFixIt:
+            accepted[suspect['token']] = suspect['suggestion']
+        elif answer == kIgnoreAlways:
+            ignored.append(suspect['token'])
+        elif answer == kStopSpell:
+            return {}, ignored, True
+        # kSkipIt -> leave it alone this run, ask again next time
+
+    return accepted, ignored, False
+
+
+# ─── Output ──────────────────────────────────────────────────────────────────
+def export_spelling_csv(suspects):
+    os.makedirs(BASE_FOLDER, exist_ok=True)
+    path = os.path.join(BASE_FOLDER, 'spelling_{}.csv'.format(
+        time.strftime('%Y%m%d_%H%M%S')))
+    with open(path, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerow(['Kind', 'Found', 'Times', 'Suggestion', 'Suggestion seen',
+                         'Edit distance'])
+        for s in suspects:
+            writer.writerow(['spelling', s['shown'], s['count'],
+                             s['suggestion_shown'], s['seen'], s['distance']])
+    return path
+
+
+def write_spelling_report(accepted, edits, sync_edits, ignored,
+                          duplicates, preview, circuits_reset, used_assoc,
+                          failed):
+    lines = report_header('SPELL CHECK {}'.format(
+        'PREVIEW' if preview else 'REPORT'))
+
+    lines.append('--- CORRECTIONS ({}) ---'.format(len(accepted)))
+    lines.append('Each applied to every spellcheckable field in scope, so linked')
+    lines.append('objects carrying the same typo are fixed identically:')
+    for wrong, right in sorted(accepted.items()):
+        lines.append('  "{}" -> "{}"'.format(wrong, right))
+    if not accepted:
+        lines.append('  (none)')
+    lines.append('')
+
+    lines.append('--- FIELDS REWRITTEN ({}) ---'.format(len(edits)))
+    lines.extend(format_edits(edits) or ['  (none)'])
+    lines.append('')
+
+    lines.append('--- LINK SYNC EDITS ({}) ---'.format(len(sync_edits)))
+    if used_assoc:
+        lines.append("Device<->equipment resolved via ConnectCAD's stored association.")
+    else:
+        lines.append("WARNING: ConnectCAD's association routine was unavailable;")
+        lines.append('device<->equipment was matched BY NAME. Check these by hand.')
+    lines.extend(format_edits(sync_edits) or ['  (none needed)'])
+    lines.append('')
+
+    if ignored:
+        lines.append('--- ADDED TO THE IGNORE LIST ({}) ---'.format(len(ignored)))
+        lines.append('Treated as correct vocabulary from now on. Edit {}'.format(
+            SPELL_IGNORE_FILE))
+        lines.append('in this folder to change your mind:')
+        for token in sorted(ignored):
+            lines.append('  {}'.format(token))
+        lines.append('')
+
+    if failed:
+        lines.append('--- WRITES REFUSED ({}) ---'.format(len(failed)))
+        lines.extend(format_edits(failed))
+        lines.append('')
+
+    if duplicates:
+        lines.append('--- DUPLICATE NAMES ({}) ---'.format(len(duplicates)))
+        for (kind, name), info in sorted(duplicates.items()):
+            mark = '  NEW' if info['created_here'] else '     '
+            lines.append('  {} {} "{}" x{}'.format(
+                mark, kind, name, len(info['currents'])))
+        lines.append('')
+
+    if not preview:
+        lines.append('Circuits reset: {}'.format(circuits_reset))
+    return '\n'.join(lines)
+
+
+# ─── Dialog ──────────────────────────────────────────────────────────────────
+sScopeLbl, sScopePopup = 404, 405
+sActionLbl, sActionPopup = 406, 407
+sPreviewChk, sNoteTxt = 408, 409
+
+
+def ask_spell_options():
+    settings = {}
+    dlg = vs.CreateLayout('Spell Check ConnectCAD Text', False, 'Continue', 'Cancel')
+
+    vs.CreateStaticText(dlg, sScopeLbl, 'Look at:', -1)
+    vs.CreatePullDownMenu(dlg, sScopePopup, 26)
+    vs.CreateStaticText(dlg, sActionLbl, 'What to do:', -1)
+    vs.CreatePullDownMenu(dlg, sActionPopup, 40)
+    vs.CreateCheckBox(dlg, sPreviewChk, 'Preview only - report, change nothing')
+    vs.CreateStaticText(
+        dlg, sNoteTxt,
+        'Free-text fields only - names, tags, user fields, circuit labels.\n'
+        'Dropdowns (connector, signal, cable type) are library values and are\n'
+        'never touched. Frequency shows what is CONSISTENT, not what is right,\n'
+        'so export the full vocabulary list to review and override any term.', -1)
+
+    vs.SetFirstLayoutItem(dlg, sScopeLbl)
+    vs.SetBelowItem(dlg, sScopeLbl, sScopePopup, 0, 0)
+    vs.SetBelowItem(dlg, sScopePopup, sActionLbl, 0, 8)
+    vs.SetBelowItem(dlg, sActionLbl, sActionPopup, 0, 0)
+    vs.SetBelowItem(dlg, sActionPopup, sPreviewChk, 0, 8)
+    vs.SetBelowItem(dlg, sPreviewChk, sNoteTxt, 0, 8)
+
+    def handler(item, data):
+        if item == kSetup:
+            vs.AddChoice(dlg, sScopePopup, 'Selected objects only', 0)
+            vs.AddChoice(dlg, sScopePopup, 'Active layer', 1)
+            vs.AddChoice(dlg, sScopePopup, 'Whole document', 2)
+            vs.SelectChoice(dlg, sScopePopup, SCOPE_DOCUMENT, True)
+
+            vs.AddChoice(dlg, sActionPopup,
+                         'Export suspected misspellings (change nothing)', 0)
+            vs.AddChoice(dlg, sActionPopup,
+                         'Export FULL vocabulary list to edit (change nothing)', 1)
+            vs.AddChoice(dlg, sActionPopup, 'Review suspects one at a time', 2)
+            vs.AddChoice(dlg, sActionPopup,
+                         'Apply replacements from vocabulary.csv', 3)
+            vs.AddChoice(dlg, sActionPopup, 'Fix every suspect (no review)', 4)
+            vs.SelectChoice(dlg, sActionPopup, ACTION_SPELL_VOCAB, True)
+
+            vs.SetBooleanItem(dlg, sPreviewChk, False)
+        elif item == kOK:
+            settings['scope'] = vs.GetSelectedChoiceIndex(dlg, sScopePopup, 0)
+            settings['action'] = vs.GetSelectedChoiceIndex(dlg, sActionPopup, 0)
+            settings['preview'] = vs.GetBooleanItem(dlg, sPreviewChk)
+
+    if vs.RunLayoutDialog(dlg, handler) != kOK:
+        return None
+    if not settings:
+        vs.AlrtDialog('Could not read the dialog settings - nothing was changed.')
+        return None
+    return settings
+
+
+def apply_corrections(handles, token_map, phrase_map, newly_ignored, settings,
+                      source='review'):
+    """Apply a correction map to the drawing and report. Returns (status, summary).
+
+    Shared by both routes into this tool -- reviewing suspects one at a time,
+    and applying replacements typed into vocabulary.csv -- so a term replaced
+    by hand goes through exactly the same link-preserving pipeline as one the
+    spellchecker suggested."""
+    edits = plan_spelling_edits(handles, token_map, phrase_map)
+    if not edits:
+        return 'done', 'nothing to rewrite - replacements matched no field in scope'
+
+    accepted = dict(token_map)
+    accepted.update(phrase_map or {})
+
+    _doc, parents = walk_document(with_parents=True)
+    planned_sync, used_assoc = plan_link_sync(edits, parents)
+    sync_edits = dedupe_edits(edits, planned_sync)
+
+    duplicates = find_duplicate_names(edits + sync_edits)
+    socket_col = find_socket_collisions(edits, parents)
+    if socket_col:
+        detail = '\n'.join(
+            '  socket "{}" in device "{}" x{}'.format(new, dname, len(currents))
+            for (dname, new), currents in sorted(socket_col.items()))
+        vs.AlrtDialog(
+            'Stopped, nothing changed: this would give one device two identically '
+            'named sockets, which a circuit cannot tell apart.\n\n{}'.format(detail))
+        return 'stopped', None
+
+    applied, synced, failed, circuits_reset = edits, sync_edits, [], 0
+    if not settings['preview']:
+        try:
+            planned = edits + sync_edits
+            landed = apply_edits(planned)
+            keys = set((e['handle'], e['field']) for e in landed)
+            applied = [e for e in edits if (e['handle'], e['field']) in keys]
+            synced = [e for e in sync_edits if (e['handle'], e['field']) in keys]
+            failed = [e for e in planned if (e['handle'], e['field']) not in keys]
+            circuits_reset = reset_circuits()
+        except Exception as err:
+            path = save_text('spelling_report', write_spelling_report(
+                accepted, edits, sync_edits, newly_ignored, duplicates,
+                False, 0, used_assoc, []))
+            vs.AlrtDialog(
+                'ERROR partway through: {}\n\nThe drawing may be partly corrected. '
+                'Undo, then check:\n{}'.format(err, path))
+            return 'stopped', None
+
+    path = save_text('spelling_report', write_spelling_report(
+        accepted, applied, synced, newly_ignored, duplicates,
+        settings['preview'], circuits_reset, used_assoc, failed))
+
+    extra = ''
+    if source != 'review':
+        extra += '\nSource: {}'.format(source)
+    if newly_ignored:
+        extra += '\n{} added to the ignore list.'.format(len(newly_ignored))
+    if failed:
+        extra += '\n{} write(s) refused.'.format(len(failed))
+
+    if settings['preview']:
+        return 'done', ('PREVIEW ONLY - NOTHING WAS CHANGED.\n'
+                        'Would apply {} replacement(s) to {} field(s), {} link '
+                        'sync.{}\n{}'.format(len(accepted), len(applied),
+                                              len(synced), extra, path))
+    return 'done', '{} replacement(s) applied to {} field(s), {} link sync.{}\n{}'.format(
+        len(accepted), len(applied), len(synced), extra, path)
+
+
+# ─── Menu tool: Spell Check ──────────────────────────────────────────────────
+def tool_spellcheck():
+    """Returns (status, summary)."""
+    settings = ask_spell_options()
+    if settings is None:
+        return 'cancelled', None
+
+    handles = collect_scope(settings['scope'])
+    if not handles:
+        vs.AlrtDialog('No objects found in the chosen scope.')
+        return 'cancelled', None
+
+    frequency, cased, objects = harvest_vocabulary(handles)
+    if not frequency:
+        vs.AlrtDialog(
+            'Found {} object(s) in scope, but no readable text on any of them.\n\n'
+            'Run Dump Fields and check the record inventory.'.format(len(handles)))
+        return 'stopped', None
+
+    ignore = load_ignore_list()
+    wordlist = load_wordlist()
+    suspects = find_suspects(frequency, cased, objects, ignore, wordlist)
+    if not suspects:
+        return 'done', 'no suspected misspellings in {} distinct word(s)'.format(
+            len(frequency))
+
+    if settings['action'] == ACTION_SPELL_VOCAB:
+        path, count = export_vocabulary_csv(frequency, cased, objects, suspects)
+        return 'done', ('{} term(s) written to\n{}\n\nType replacements into the '
+                        '"Replace with" column, save, then run again with '
+                        '"Apply replacements".'.format(count, path))
+
+    if settings['action'] == ACTION_SPELL_EXPORT:
+        path = export_spelling_csv(suspects)
+        return 'done', '{} suspect(s) listed in\n{}'.format(len(suspects), path)
+
+    if settings['action'] == ACTION_SPELL_REVIEW:
+        accepted, newly_ignored, aborted = review_suspects(suspects)
+        if aborted:
+            append_ignore_list(newly_ignored)
+            vs.AlrtDialog('Stopped. Nothing was changed.')
+            return 'cancelled', 'stopped during review, nothing changed'
+    else:
+        accepted = {s['token']: s['suggestion'] for s in suspects}
+        newly_ignored = []
+
+    ignore_path = append_ignore_list(newly_ignored)
+
+    if not accepted:
+        summary = 'no corrections chosen'
+        if newly_ignored:
+            summary += '; {} token(s) added to the ignore list'.format(
+                len(newly_ignored))
+        return 'done', summary
+
+    return apply_corrections(handles, accepted, {}, newly_ignored,
+                             settings)
+
+# ═══════════════════════════════════════════════════════════════════════════
 # LAUNCHER
 # ═══════════════════════════════════════════════════════════════════════════
 lToolLbl = 304
-lDumpChk, lNormChk, lMatchChk = 305, 306, 307
+lDumpChk, lNormChk, lMatchChk, lSpellChk = 305, 306, 307, 310
 lOrderTxt, lHintTxt = 308, 309
 
 
@@ -1613,10 +2306,12 @@ def ask_which_tools():
     vs.CreateCheckBox(dlg, lDumpChk, 'Dump Fields  (diagnostic, read-only)')
     vs.CreateCheckBox(dlg, lNormChk, 'Normalise Names  (uppercase / trim)')
     vs.CreateCheckBox(dlg, lMatchChk, 'Match Names and Display Tags')
+    vs.CreateCheckBox(dlg, lSpellChk, 'Spell Check')
     vs.CreateStaticText(
         dlg, lOrderTxt,
         'Run in this order. Normalising first resolves case- and space-only\n'
-        'mismatches, so Match only asks about genuinely different pairs.', -1)
+        'mismatches, so Match only asks about genuinely different pairs, and\n'
+        'Spell Check then sees the settled spelling of every name.', -1)
     vs.CreateStaticText(
         dlg, lHintTxt, 'Reports are written to ~/Documents/CC Tools/', -1)
 
@@ -1624,7 +2319,8 @@ def ask_which_tools():
     vs.SetBelowItem(dlg, lToolLbl, lDumpChk, 0, 0)
     vs.SetBelowItem(dlg, lDumpChk, lNormChk, 0, 0)
     vs.SetBelowItem(dlg, lNormChk, lMatchChk, 0, 0)
-    vs.SetBelowItem(dlg, lMatchChk, lOrderTxt, 0, 8)
+    vs.SetBelowItem(dlg, lMatchChk, lSpellChk, 0, 0)
+    vs.SetBelowItem(dlg, lSpellChk, lOrderTxt, 0, 8)
     vs.SetBelowItem(dlg, lOrderTxt, lHintTxt, 0, 8)
 
     def handler(item, data):
@@ -1632,6 +2328,7 @@ def ask_which_tools():
             vs.SetBooleanItem(dlg, lDumpChk, False)
             vs.SetBooleanItem(dlg, lNormChk, True)
             vs.SetBooleanItem(dlg, lMatchChk, False)
+            vs.SetBooleanItem(dlg, lSpellChk, False)
         elif item == kOK:
             picked = []
             # Fixed order, independent of which boxes the user ticked first.
@@ -1641,6 +2338,8 @@ def ask_which_tools():
                 picked.append(TOOL_NORMALISE)
             if vs.GetBooleanItem(dlg, lMatchChk):
                 picked.append(TOOL_MATCH)
+            if vs.GetBooleanItem(dlg, lSpellChk):
+                picked.append(TOOL_SPELL)
             chosen['tools'] = picked
 
     if vs.RunLayoutDialog(dlg, handler) != kOK:
@@ -1652,6 +2351,7 @@ TOOL_RUNNERS = [
     (TOOL_DUMP, 'Dump Fields'),
     (TOOL_NORMALISE, 'Normalise Names'),
     (TOOL_MATCH, 'Match Names and Tags'),
+    (TOOL_SPELL, 'Spell Check'),
 ]
 
 
@@ -1676,6 +2376,7 @@ def run_cc_tools():
         TOOL_DUMP: tool_dump_fields,
         TOOL_NORMALISE: tool_normalise,
         TOOL_MATCH: tool_match_names_and_tags,
+        TOOL_SPELL: tool_spellcheck,
     }
     names = dict((tool, name) for tool, name in TOOL_RUNNERS)
 
