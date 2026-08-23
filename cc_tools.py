@@ -427,10 +427,11 @@ def plan_link_sync(edits, parents):
     sync_edits = []
     document = walk_document()
     dev_to_equip, equip_to_dev, have_assoc = build_association_map(document)
-    # Fields the caller is already rewriting. Without this the cascade
-    # (equipment -> its device -> that device's equipment) re-plans the very
-    # edit it started from, which dedupe would drop but the report would show.
-    spoken_for = set((e['handle'], e['field']) for e in edits)
+    # Fields the caller is already rewriting, kept as a lookup so a conflicting
+    # plan can amend the existing edit instead of silently losing to it.
+    # Without this the cascade (equipment -> its device -> that device's
+    # equipment) also re-plans the very edit it started from.
+    spoken_for = dict(((e['handle'], e['field']), e) for e in edits)
 
     # Pass 1: equipment renames drag their schematic device along. Collected
     # first because it extends the set of device names that change, which
@@ -474,13 +475,47 @@ def plan_link_sync(edits, parents):
     if have_assoc:
         renamed_devices = {e['handle']: e for e in edits + sync_edits
                            if e['kind'] == 'device' and e['is_link_name']}
+        # Equipment items that already belong to some device. Nothing outside
+        # a device's own association may be claimed from this set.
+        spoken_equipment = set(dev_to_equip.values())
+
         for device_handle, edit in renamed_devices.items():
             partner = dev_to_equip.get(device_handle)
+
             if partner is None:
+                # This device has no stored association. Falling back to name
+                # matching for it alone mirrors what ConnectCAD does on rename:
+                # a device with no surviving association is re-linked by name.
+                # Only UNCLAIMED equipment is eligible, so this can never steal
+                # an item that is genuinely associated with another device.
+                for h in document:
+                    if classify(h) != 'equipment' or h in spoken_equipment:
+                        continue
+                    field = resolve_field(h, EQUIP_NAME_FIELDS)
+                    if not field or (h, field) in spoken_for:
+                        continue
+                    current = read_field(h, field)
+                    if (not is_unnamed(current) and current == edit['old']
+                            and current != edit['new']):
+                        sync_edits.append(make_edit(h, 'equipment', field,
+                                                    current, edit['new'], True))
                 continue
+
             field = resolve_field(partner, EQUIP_NAME_FIELDS)
-            if not field or (partner, field) in spoken_for:
+            if not field:
                 continue
+
+            existing = spoken_for.get((partner, field))
+            if existing is not None:
+                # The equipment item is already being rewritten in its own
+                # right -- normalised, say. The device rename has to win:
+                # ConnectCAD SEVERS the stored association when a device and
+                # its equipment item end up with different names, so letting
+                # the independent edit stand would quietly unlink the pair.
+                if existing['new'] != edit['new']:
+                    existing['new'] = edit['new']
+                continue
+
             current = read_field(partner, field)
             if current != edit['new']:
                 sync_edits.append(make_edit(partner, 'equipment', field,
