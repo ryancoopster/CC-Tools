@@ -21,7 +21,9 @@ Normalise runs before Match on purpose: uppercasing and trimming collapses every
 
 The vocabulary in a ConnectCAD drawing is `SWTCH`, `AVB Pri`, `EC-6A`, `pCON grey`, `NE8FDX-P6-B`. A dictionary would reject nearly all of it, so suspects are found from the drawing itself: a term used on one or two objects that is a single edit away from one used on many is probably a typo (`Cirrcuit` against `Circuit`). A system word list, where present, is used only to *spare* real words from suspicion — never to condemn a term for not being English.
 
-But frequency only tells you what is **consistent**, not what is **correct** — a mistake used everywhere looks exactly like house style. So the tool also exports the **full vocabulary list**: every term in the drawing with its usage counts and a blank `Replace with` column. Fill that in, run *Apply replacements*, and each one is applied globally. Multi-word entries act as a literal find-and-replace, which is the piece Vectorworks' own Find and Replace doesn't do for ConnectCAD objects.
+But frequency only tells you what is **consistent**, not what is **correct** — a mistake used everywhere looks exactly like house style. So the default action shows you **every term in the drawing** in a scrollable table with its usage counts: pick a row, type a replacement, press Set. Nothing leaves Vectorworks. Rarest terms sort to the top, so anything odd is near the front rather than buried.
+
+Multi-word entries are replaced literally, which makes this a find-and-replace across ConnectCAD objects — the piece Vectorworks' own Find and Replace doesn't cover. The same list can also be exported to CSV and re-applied if you'd rather do bulk work in a spreadsheet.
 
 Every replacement is a **global token substitution**, not a per-object edit. Fixing a typo fixes it identically in the device, its tag, its equipment item and every reference at once — which is what keeps name-linked objects linked through the change.
 

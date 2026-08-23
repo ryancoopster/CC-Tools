@@ -1689,11 +1689,12 @@ SPELL_MIN_LENGTH = 4       # shorter tokens are abbreviations far more often
 
 kFixIt, kSkipIt, kIgnoreAlways, kStopSpell = 1, 0, 2, 3
 
-ACTION_SPELL_EXPORT = 0
-ACTION_SPELL_VOCAB  = 1    # export every term for review, not just suspects
-ACTION_SPELL_REVIEW = 2
-ACTION_SPELL_APPLY  = 3    # apply the replacements typed into vocabulary.csv
-ACTION_SPELL_ALL    = 4
+ACTION_SPELL_LIST   = 0    # review every term in a dialog, no file involved
+ACTION_SPELL_REVIEW = 1    # step through suspected misspellings only
+ACTION_SPELL_EXPORT = 2
+ACTION_SPELL_VOCAB  = 3    # export every term to a CSV, for bulk work
+ACTION_SPELL_APPLY  = 4    # apply the replacements typed into vocabulary.csv
+ACTION_SPELL_ALL    = 5
 
 
 # ─── Text utilities ──────────────────────────────────────────────────────────
@@ -2134,6 +2135,169 @@ def write_spelling_report(accepted, edits, sync_edits, ignored,
     return '\n'.join(lines)
 
 
+# ─── In-dialog vocabulary review ─────────────────────────────────────────────
+#
+# A list browser shows every term; a separate edit field takes the replacement.
+# Vectorworks has no script-accessible in-cell text editing -- the only in-place
+# controls a list browser offers are radio and multi-state -- so "click a row,
+# type in the box, press Set" is the whole interaction, not a shortcut.
+#
+# Two documented traps drive the shape of this code:
+#   - Arrow keys and type-ahead move the highlight but report rowIndex = -1, so
+#     the selected row is re-derived by scanning rather than trusted from the
+#     event. Believing the event would write a replacement onto the wrong term.
+#   - Sorting reorders rows and invalidates every stored index, so it is turned
+#     off. It defaults to ON.
+
+vScope, vLB, vEditLbl, vEdit, vSetBtn, vClearBtn, vHint = 504, 505, 506, 507, 508, 509, 510
+
+kLBSelChangeClick  = -4
+kLBUpKey           = -7
+kLBDownKey         = -8
+kLBAlphaKey        = -9
+
+COL_TERM, COL_USES, COL_OBJECTS, COL_REPLACE = 0, 1, 2, 3
+
+
+def lb_selected_row(dlg, lb, count):
+    """The highlighted row, found by scanning rather than from the event.
+
+    GetLBEventInfo reports rowIndex -1 for arrow-key and type-ahead navigation
+    even though the highlight moves, so trusting it would attribute a typed
+    replacement to whichever row was last clicked."""
+    for i in range(count):
+        if vs.IsLBItemSelected(dlg, lb, i):
+            return i
+    return -1
+
+
+def lb_cell(dlg, lb, row, col):
+    """Read one cell. GetLBItemInfo returns (ok, text, imageIndex)."""
+    try:
+        ok, text, _image = vs.GetLBItemInfo(dlg, lb, row, col)
+        return text if ok else ''
+    except Exception:
+        return ''
+
+
+def review_vocabulary_dialog(rows):
+    """Show every term with a Replace-with column. Returns {term: replacement}.
+
+    `rows` is [(term, uses, objects)], already ordered -- rarest first, so the
+    terms worth a second look are at the top. Returns None if cancelled."""
+    state = {'row': -1}
+    result = {}
+    count = len(rows)
+
+    dlg = vs.CreateLayout('Review Vocabulary', False, 'OK', 'Cancel')
+
+    vs.CreateStaticText(dlg, vScope,
+                        'Every term in scope. Select one, type a replacement, '
+                        'press Set.', -1)
+    vs.CreateLB(dlg, vLB, 92, 22)
+    vs.CreateStaticText(dlg, vEditLbl, 'Replace with:', -1)
+    vs.CreateEditText(dlg, vEdit, '', 40)
+    vs.CreatePushButton(dlg, vSetBtn, 'Set')
+    vs.CreatePushButton(dlg, vClearBtn, 'Clear')
+    vs.CreateStaticText(dlg, vHint,
+                        'Leave a row blank to keep it. Multi-word terms are '
+                        'replaced literally.', -1)
+
+    vs.SetFirstLayoutItem(dlg, vScope)
+    vs.SetBelowItem(dlg, vScope, vLB, 0, 0)
+    vs.SetBelowItem(dlg, vLB, vEditLbl, 0, 8)
+    vs.SetBelowItem(dlg, vEditLbl, vEdit, 0, 0)
+    vs.SetRightItem(dlg, vEdit, vSetBtn, 4, 0)
+    vs.SetRightItem(dlg, vSetBtn, vClearBtn, 4, 0)
+    vs.SetBelowItem(dlg, vEdit, vHint, 0, 8)
+
+    def commit_pending():
+        """Move whatever is in the edit field onto the row it belongs to."""
+        row = state['row']
+        if row < 0:
+            return
+        typed = (vs.GetItemText(dlg, vEdit) or '').strip()
+        if typed != lb_cell(dlg, vLB, row, COL_REPLACE):
+            vs.SetLBItemInfo(dlg, vLB, row, COL_REPLACE, typed, -1)
+
+    def load_row(row):
+        state['row'] = row
+        vs.SetItemText(dlg, vEdit, lb_cell(dlg, vLB, row, COL_REPLACE)
+                       if row >= 0 else '')
+
+    def handler(item, data):
+        if item == kSetup:
+            # Columns must be inserted at increasing indices; inserting
+            # repeatedly at 0 is a documented header-rendering bug.
+            vs.InsertLBColumn(dlg, vLB, COL_TERM, 'Term', 240)
+            vs.InsertLBColumn(dlg, vLB, COL_USES, 'Times used', 90)
+            vs.InsertLBColumn(dlg, vLB, COL_OBJECTS, 'Objects', 80)
+            vs.InsertLBColumn(dlg, vLB, COL_REPLACE, 'Replace with', 240)
+            vs.ShowLBHeader(dlg, vLB, True)
+            vs.EnableLBColumnLines(dlg, vLB, True)
+            vs.EnableLBSingleLineSelection(dlg, vLB, True)
+            # OFF deliberately: sorting reorders rows and every stored index
+            # goes stale mid-edit. It defaults to ON.
+            vs.EnableLBSorting(dlg, vLB, False)
+
+            vs.EnableLBUpdates(dlg, vLB, False)
+            for index, (term, uses, objs) in enumerate(rows):
+                vs.InsertLBItem(dlg, vLB, index, term)
+                vs.SetLBItemInfo(dlg, vLB, index, COL_USES, str(uses), -1)
+                vs.SetLBItemInfo(dlg, vLB, index, COL_OBJECTS, str(objs), -1)
+                vs.SetLBItemInfo(dlg, vLB, index, COL_REPLACE, '', -1)
+            vs.EnableLBUpdates(dlg, vLB, True)
+            vs.RefreshLB(dlg, vLB)
+
+        elif item == vLB:
+            # GetLBEventInfo is only meaningful inside this branch.
+            try:
+                ok, event, row, _col = vs.GetLBEventInfo(dlg, vLB)
+            except Exception:
+                ok, event, row = False, 0, -1
+            if event in (kLBUpKey, kLBDownKey, kLBAlphaKey) or row < 0:
+                row = lb_selected_row(dlg, vLB, count)
+            if row >= 0 and row != state['row']:
+                commit_pending()
+                load_row(row)
+
+        elif item == vSetBtn:
+            if state['row'] < 0:
+                row = lb_selected_row(dlg, vLB, count)
+                if row >= 0:
+                    load_row(row)
+            commit_pending()
+
+        elif item == vClearBtn:
+            vs.SetItemText(dlg, vEdit, '')
+            if state['row'] >= 0:
+                vs.SetLBItemInfo(dlg, vLB, state['row'], COL_REPLACE, '', -1)
+
+        elif item == kOK:
+            commit_pending()
+            for index in range(count):
+                term = lb_cell(dlg, vLB, index, COL_TERM)
+                replacement = lb_cell(dlg, vLB, index, COL_REPLACE).strip()
+                if term and replacement and replacement != term:
+                    result[term] = replacement
+
+    if vs.RunLayoutDialog(dlg, handler) != kOK:
+        return None
+    return result
+
+
+def split_replacements(raw):
+    """Sort {term: replacement} into single-word tokens and literal phrases."""
+    token_map = {}
+    phrase_map = {}
+    for term, replacement in raw.items():
+        if ' ' in term:
+            phrase_map[term] = replacement
+        else:
+            token_map[term.lower()] = replacement
+    return token_map, phrase_map
+
+
 # ─── Dialog ──────────────────────────────────────────────────────────────────
 sScopeLbl, sScopePopup = 404, 405
 sActionLbl, sActionPopup = 406, 407
@@ -2154,7 +2318,7 @@ def ask_spell_options():
         'Free-text fields only - names, tags, user fields, circuit labels.\n'
         'Dropdowns (connector, signal, cable type) are library values and are\n'
         'never touched. Frequency shows what is CONSISTENT, not what is right,\n'
-        'so export the full vocabulary list to review and override any term.', -1)
+        'so the list lets you override any term, however often it is used.', -1)
 
     vs.SetFirstLayoutItem(dlg, sScopeLbl)
     vs.SetBelowItem(dlg, sScopeLbl, sScopePopup, 0, 0)
@@ -2171,14 +2335,18 @@ def ask_spell_options():
             vs.SelectChoice(dlg, sScopePopup, SCOPE_DOCUMENT, True)
 
             vs.AddChoice(dlg, sActionPopup,
-                         'Export suspected misspellings (change nothing)', 0)
+                         'Review all terms in a list (recommended)', 0)
             vs.AddChoice(dlg, sActionPopup,
-                         'Export FULL vocabulary list to edit (change nothing)', 1)
-            vs.AddChoice(dlg, sActionPopup, 'Review suspects one at a time', 2)
+                         'Review suspected misspellings one at a time', 1)
             vs.AddChoice(dlg, sActionPopup,
-                         'Apply replacements from vocabulary.csv', 3)
-            vs.AddChoice(dlg, sActionPopup, 'Fix every suspect (no review)', 4)
-            vs.SelectChoice(dlg, sActionPopup, ACTION_SPELL_VOCAB, True)
+                         'Export suspects to CSV (change nothing)', 2)
+            vs.AddChoice(dlg, sActionPopup,
+                         'Export all terms to CSV (change nothing)', 3)
+            vs.AddChoice(dlg, sActionPopup,
+                         'Apply replacements from vocabulary.csv', 4)
+            vs.AddChoice(dlg, sActionPopup,
+                         'Fix every suspect without asking', 5)
+            vs.SelectChoice(dlg, sActionPopup, ACTION_SPELL_LIST, True)
 
             vs.SetBooleanItem(dlg, sPreviewChk, False)
         elif item == kOK:
@@ -2289,6 +2457,25 @@ def tool_spellcheck():
     if not suspects:
         return 'done', 'no suspected misspellings in {} distinct word(s)'.format(
             len(frequency))
+
+    if settings['action'] == ACTION_SPELL_LIST:
+        suspect_by_token = {s['token']: s for s in suspects}
+        # Rarest first, so anything odd is near the top rather than buried
+        # among hundreds of settled terms.
+        ordered = sorted(frequency,
+                         key=lambda t: (objects.get(t, frequency[t]),
+                                        frequency[t], t))
+        listed = [(cased.get(t, t), frequency[t], objects.get(t, frequency[t]))
+                  for t in ordered]
+        raw = review_vocabulary_dialog(listed)
+        if raw is None:
+            return 'cancelled', 'closed the vocabulary list, nothing changed'
+        if not raw:
+            return 'done', ('reviewed {} term(s), no replacements '
+                            'entered'.format(len(listed)))
+        token_map, phrase_map = split_replacements(raw)
+        return apply_corrections(handles, token_map, phrase_map, [], settings,
+                                 source='vocabulary list')
 
     if settings['action'] == ACTION_SPELL_VOCAB:
         path, count = export_vocabulary_csv(frequency, cased, objects, suspects)
