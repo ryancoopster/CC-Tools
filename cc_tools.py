@@ -2706,6 +2706,261 @@ def tool_spellcheck():
                              settings)
 
 # ═══════════════════════════════════════════════════════════════════════════
+# CLAUDE API CLIENT
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Raw HTTPS rather than the official `anthropic` SDK, deliberately: this whole
+# plug-in is one file pasted into the Plug-in Manager, and Vectorworks' embedded
+# Python has no install step a user could run. Adding a pip dependency would
+# trade the entire install story for a nicer client object.
+#
+# Vectorworks 2026 ships Python 3.9 with _ssl, _socket, urllib, json AND
+# certifi in site-packages, so certificate verification works without bundling
+# anything.
+#
+# EVERY call is logged to claude_usage.csv with its real token counts and
+# computed cost. Estimates made before a run are guesses; this records what was
+# actually billed.
+
+CLAUDE_CONFIG_FILE = 'claude_config.json'
+CLAUDE_USAGE_FILE = 'claude_usage.csv'
+CLAUDE_ENDPOINT = 'https://api.anthropic.com/v1/messages'
+CLAUDE_API_VERSION = '2023-06-01'
+
+# US dollars per MILLION tokens. Published rates as of 2026-06; they can change,
+# so the log records the rate used rather than only the derived cost.
+CLAUDE_RATES = {
+    'claude-opus-5':    {'input': 5.00,  'output': 25.00},
+    'claude-sonnet-5':  {'input': 2.00,  'output': 10.00},
+    'claude-haiku-4-5': {'input': 1.00,  'output': 5.00},
+}
+CACHE_WRITE_MULTIPLIER = 1.25   # writing to cache costs more than plain input
+CACHE_READ_MULTIPLIER = 0.10    # reading from cache costs a fraction
+
+CLAUDE_DEFAULT_MODEL = 'claude-opus-5'
+CLAUDE_CONFIG_TEMPLATE = {
+    '_comment': 'CC Tools - Claude API settings. Your key is NOT part of your '
+                'Claude subscription; create one at console.anthropic.com and '
+                'load credits there. Keep this file private.',
+    'api_key': '',
+    'model': CLAUDE_DEFAULT_MODEL,
+    'max_tokens': 16000,
+}
+
+
+def claude_config_path():
+    return os.path.join(BASE_FOLDER, CLAUDE_CONFIG_FILE)
+
+
+def write_claude_config_template():
+    """Create an empty settings file for the user to paste their own key into.
+
+    The template carries no secret. The key itself is only ever typed by the
+    user into this file -- the plug-in reads it, sends it to Anthropic, and
+    never writes it to a report, a log or an error message."""
+    import json
+    os.makedirs(BASE_FOLDER, exist_ok=True)
+    path = claude_config_path()
+    if os.path.exists(path):
+        return path, False
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(CLAUDE_CONFIG_TEMPLATE, f, indent=2)
+    return path, True
+
+
+def load_claude_config():
+    """Return (config, error). Never logs or reports the key itself."""
+    import json
+    path = claude_config_path()
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+    except FileNotFoundError:
+        created, was_new = write_claude_config_template()
+        return None, ('No Claude settings found, so a blank one was created:\n{}'
+                      '\n\nPaste your API key into it and run this again.\n\n'
+                      'Note: API usage is billed separately from a Claude '
+                      'subscription. Create a key at console.anthropic.com.'
+                      .format(created))
+    except Exception as err:
+        return None, 'Could not read {}: {}'.format(CLAUDE_CONFIG_FILE, err)
+
+    key = (config.get('api_key') or '').strip()
+    if not key:
+        return None, ('No API key in {}.\n\nPaste your key into the "api_key" '
+                      'field and run this again.'.format(claude_config_path()))
+    config['api_key'] = key
+    config.setdefault('model', CLAUDE_DEFAULT_MODEL)
+    config.setdefault('max_tokens', 16000)
+    return config, None
+
+
+# ─── Usage accounting ────────────────────────────────────────────────────────
+def usage_cost(model, usage):
+    """Dollar cost of one call, from the token counts the API actually returned.
+
+    Cache reads and writes are priced differently from plain input, so a run
+    that looks cheap on input_tokens alone can be wrong either way."""
+    rates = CLAUDE_RATES.get(model)
+    if not rates:
+        return None
+    plain_in = usage.get('input_tokens', 0) or 0
+    cache_write = usage.get('cache_creation_input_tokens', 0) or 0
+    cache_read = usage.get('cache_read_input_tokens', 0) or 0
+    out = usage.get('output_tokens', 0) or 0
+
+    per_token_in = rates['input'] / 1000000.0
+    per_token_out = rates['output'] / 1000000.0
+    return (plain_in * per_token_in
+            + cache_write * per_token_in * CACHE_WRITE_MULTIPLIER
+            + cache_read * per_token_in * CACHE_READ_MULTIPLIER
+            + out * per_token_out)
+
+
+def log_claude_usage(model, purpose, usage, cost, note=''):
+    """Append one row per call. This file is the record of real spend."""
+    os.makedirs(BASE_FOLDER, exist_ok=True)
+    path = os.path.join(BASE_FOLDER, CLAUDE_USAGE_FILE)
+    new = not os.path.exists(path)
+    with open(path, 'a', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        if new:
+            writer.writerow(['When', 'File', 'Purpose', 'Model', 'Input tokens',
+                             'Cache write', 'Cache read', 'Output tokens',
+                             'Cost USD', 'Input $/Mtok', 'Output $/Mtok', 'Note'])
+        rates = CLAUDE_RATES.get(model, {})
+        writer.writerow([
+            time.strftime('%Y-%m-%d %H:%M:%S'), vs.GetFName(), purpose, model,
+            usage.get('input_tokens', 0),
+            usage.get('cache_creation_input_tokens', 0),
+            usage.get('cache_read_input_tokens', 0),
+            usage.get('output_tokens', 0),
+            '' if cost is None else '{:.4f}'.format(cost),
+            rates.get('input', ''), rates.get('output', ''), note,
+        ])
+    return path
+
+
+def usage_totals():
+    """Everything spent so far, read back from the log. Returns (calls, dollars)."""
+    path = os.path.join(BASE_FOLDER, CLAUDE_USAGE_FILE)
+    calls = 0
+    total = 0.0
+    try:
+        with open(path, 'r', newline='', encoding='utf-8') as f:
+            reader = csv.reader(f)
+            header = next(reader, None)
+            if not header or 'Cost USD' not in header:
+                return 0, 0.0
+            cost_i = header.index('Cost USD')
+            for row in reader:
+                if len(row) <= cost_i:
+                    continue
+                calls += 1
+                try:
+                    total += float(row[cost_i])
+                except (ValueError, TypeError):
+                    pass
+    except FileNotFoundError:
+        return 0, 0.0
+    except Exception:
+        return calls, total
+    return calls, total
+
+
+# ─── The call itself ─────────────────────────────────────────────────────────
+def claude_request(config, messages, system=None, purpose='request',
+                   max_tokens=None, note=''):
+    """POST to the Messages API. Returns (reply_text, usage, cost, error).
+
+    On any failure the error string is safe to show: it never contains the key.
+    Usage is logged even for calls that fail partway, because a request that
+    errored after the model produced tokens is still billed."""
+    import json
+    import urllib.request
+    import urllib.error
+
+    model = config.get('model', CLAUDE_DEFAULT_MODEL)
+    body = {
+        'model': model,
+        'max_tokens': max_tokens or config.get('max_tokens', 16000),
+        'messages': messages,
+    }
+    if system:
+        body['system'] = system
+
+    payload = json.dumps(body).encode('utf-8')
+    request = urllib.request.Request(CLAUDE_ENDPOINT, data=payload, method='POST')
+    request.add_header('content-type', 'application/json')
+    request.add_header('anthropic-version', CLAUDE_API_VERSION)
+    request.add_header('x-api-key', config['api_key'])
+
+    context = None
+    try:
+        import ssl
+        try:
+            import certifi
+            context = ssl.create_default_context(cafile=certifi.where())
+        except Exception:
+            context = ssl.create_default_context()
+    except Exception:
+        context = None
+
+    try:
+        opened = urllib.request.urlopen(request, timeout=600, context=context)
+        raw = opened.read().decode('utf-8')
+    except urllib.error.HTTPError as err:
+        detail = ''
+        try:
+            detail = json.loads(err.read().decode('utf-8')).get(
+                'error', {}).get('message', '')
+        except Exception:
+            pass
+        hint = ''
+        if err.code == 401:
+            hint = ('\n\nThe key in {} was rejected. API access is separate '
+                    'from a Claude subscription -- the key must come from '
+                    'console.anthropic.com with credit on it.'.format(
+                        CLAUDE_CONFIG_FILE))
+        elif err.code == 429:
+            hint = '\n\nRate limited or out of credit. Wait, or top up.'
+        return None, {}, None, 'Claude API error {}: {}{}'.format(
+            err.code, detail or err.reason, hint)
+    except Exception as err:
+        return None, {}, None, 'Could not reach the Claude API: {}'.format(err)
+
+    try:
+        data = json.loads(raw)
+    except Exception as err:
+        return None, {}, None, 'Unreadable reply from the Claude API: {}'.format(err)
+
+    usage = data.get('usage', {}) or {}
+    cost = usage_cost(model, usage)
+    log_claude_usage(model, purpose, usage, cost, note)
+
+    if data.get('stop_reason') == 'refusal':
+        return None, usage, cost, 'Claude declined this request.'
+
+    reply = ''.join(block.get('text', '') for block in data.get('content', [])
+                    if block.get('type') == 'text')
+    if not reply:
+        return None, usage, cost, 'Claude returned no text.'
+    return reply, usage, cost, None
+
+
+def format_usage(usage, cost):
+    """One readable line about what a call cost."""
+    parts = ['{} in'.format(usage.get('input_tokens', 0))]
+    if usage.get('cache_read_input_tokens'):
+        parts.append('{} cached'.format(usage['cache_read_input_tokens']))
+    parts.append('{} out'.format(usage.get('output_tokens', 0)))
+    line = ', '.join(parts)
+    if cost is not None:
+        line += '  =  ${:.4f}'.format(cost)
+    return line
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # LAUNCHER
 # ═══════════════════════════════════════════════════════════════════════════
 lToolLbl = 304

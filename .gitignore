@@ -2,3 +2,5 @@ __pycache__/
 *.pyc
 .DS_Store
 sandbox_out/
+claude_config.json
+claude_usage.csv
