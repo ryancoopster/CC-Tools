@@ -217,8 +217,8 @@ m10.place_socket(socket, device_box, 1, 0, 1.0, 1.0)
 # socket centre is (-0.0665, 0.0395); target is the right edge, 0.5" below top
 check('T10 right socket lands on the right edge',
       moved and abs(moved[-1][0] - (1.5 - -0.0665)) < 0.001, repr(moved))
-check('T10 first socket sits half an inch below the top',
-      moved and abs(moved[-1][1] - ((1.4 - 0.5) - 0.0395)) < 0.001, repr(moved))
+check('T10 first socket sits half an inch below the HEADER',
+      moved and abs(moved[-1][1] - (-0.5 - 0.0395)) < 0.001, repr(moved))
 
 moved[:] = []
 m10.place_socket(socket, device_box, -1, 0, 1.0, 1.0)
@@ -266,8 +266,8 @@ check('T12 sockets excluded from the body measurement',
 m12.place_socket(socket12, measured, -1, 0, 1.0, 1.0)
 check('T12 left socket moves to the LOCAL left edge',
       moved12 and abs(moved12[-1][0] - (-1.5 - -0.0665)) < 0.001, repr(moved12))
-check('T12 vertical measured from the body TOP',
-      moved12 and abs(moved12[-1][1] - ((1.4 - 0.5) - 0.0395)) < 0.001, repr(moved12))
+check('T12 vertical measured from the header baseline',
+      moved12 and abs(moved12[-1][1] - (-0.5 - 0.0395)) < 0.001, repr(moved12))
 
 # The device's document position must not influence placement at all.
 moved12[:] = []
@@ -411,5 +411,37 @@ check('T17 first drop is half an inch of drawing',
       m17.socket_drop(0, 1.0, 1.0) == 0.5)
 check('T17 third socket sits one inch down',
       m17.socket_drop(2, 1.0, 1.0) == 1.0)
+
+
+# ── T18: sockets hang from the HEADER, not the top of the block ─────────────
+# CC_DeviceFromShape adds a header above the rectangle it is given: a 1.0-tall
+# request came back as body -1.000..0.400, so local y = 0 is the header's
+# bottom edge. Measuring from the block top puts the whole stack a header's
+# height too high -- a constant error that reads as a bad offset.
+m18, vs18 = load(Doc([[dev('x')]]))
+body18 = (-1.5, -1.0, 1.5, 0.4)          # local: body -1.0..0, header 0..0.4
+check('T18 sockets hang from local y = 0', m18.header_baseline(body18) == 0.0)
+
+moved18 = []
+vs18.HMove = lambda h, dx, dy: moved18.append(round(dy, 4))
+vs18.GetBBox = lambda h: (-0.13, 0.1, 0.13, -0.1)     # socket centred on origin
+sk18 = Obj('Socket', {})
+for i in range(3):
+    m18.place_socket(sk18, body18, 1, i, 1.0, 1.0)
+check('T18 first socket half an inch below the header',
+      abs(moved18[0] - -0.5) < 0.001, repr(moved18))
+check('T18 second a quarter inch below that',
+      abs(moved18[1] - -0.75) < 0.001, repr(moved18))
+check('T18 third another quarter down',
+      abs(moved18[2] - -1.0) < 0.001, repr(moved18))
+check('T18 none sit inside the header',
+      all(v < 0 for v in moved18), repr(moved18))
+
+# A taller header must not move the stack: the baseline is the origin.
+tall_header = (-1.5, -1.0, 1.5, 2.0)
+moved18[:] = []
+m18.place_socket(sk18, tall_header, 1, 0, 1.0, 1.0)
+check('T18 header height does not shift the stack',
+      abs(moved18[0] - -0.5) < 0.001, repr(moved18))
 
 R.report_and_exit()

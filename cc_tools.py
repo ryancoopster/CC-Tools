@@ -3023,8 +3023,15 @@ TYPE_SYMDEF = 16
 DEFAULTS_FOLDER = 14          # BuildResourceList: Defaults folder
 
 # House convention for socket placement, read off the Chautauqua and Geffen
-# drawings: the first socket sits half an inch below the top of the device
-# block, and every socket after it is a quarter inch below the last.
+# drawings: the first socket sits half an inch below the device's HEADER --
+# the name/make block at the top -- and every socket after it is a quarter
+# inch below the last.
+#
+# The header is not part of the rectangle you hand to CC_DeviceFromShape.
+# A 2.0 x 1.0 request came back as a body spanning local y -1.000..0.400: the
+# requested 1.0 became the body proper at -1.0..0.0, and ConnectCAD added a
+# 0.4-tall header above it. So local y = 0 is the header's bottom edge, and
+# that -- not the top of the whole block -- is what sockets hang from.
 #
 # These are inches ON THE PRINTED SHEET. Design-layer geometry is stored at
 # world size and the layer scale maps it to paper, so a schematic at 1:2 needs
@@ -3282,22 +3289,33 @@ def body_bounds(group):
     return box
 
 
+def header_baseline(body_box):
+    """The y sockets hang from: the bottom of the device's header.
+
+    In the profile group's local frame that is y = 0 -- the device's own
+    origin, where ConnectCAD's header meets the body it was given. Measuring
+    from the top of the block instead puts the whole stack a header's height
+    too high, which is a constant error and so looks like a bad offset rather
+    than a wrong reference point."""
+    return 0.0
+
+
 def place_socket(socket, body_box, side, index, upi, scale=1.0):
     """Move a socket onto the device body's edge at its place in the stack.
 
     `body_box` must come from body_bounds -- the device's own bounds are in a
     different coordinate frame. `side` is -1 for the left edge, +1 for the
-    right. `index` is the socket's position on that side, 0 upwards; they run
-    downward from the top of the block on the house pitch, not spread across
-    the block's height, so a device keeps its spacing however tall it is."""
+    right. `index` is the socket's position on that side, 0 upwards; they hang
+    from the header on a fixed pitch rather than spreading across the block, so
+    a device keeps its spacing however tall it is."""
     socket_box = bounds(socket)
     if not socket_box or not body_box:
         return False
-    left, _bottom, right, top = body_box
+    left, _bottom, right, _top = body_box
     centre_x = (socket_box[0] + socket_box[2]) / 2.0
     centre_y = (socket_box[1] + socket_box[3]) / 2.0
     target_x = right if side > 0 else left
-    target_y = top - socket_drop(index, upi, scale)
+    target_y = header_baseline(body_box) - socket_drop(index, upi, scale)
     try:
         vs.HMove(socket, target_x - centre_x, target_y - centre_y)
         return True
@@ -3348,6 +3366,9 @@ def measure(device, group, log_prefix='  ', upi=None, scale=1.0):
     if body:
         out.append('{}info  body (local)   x {:.3f}..{:.3f}   y {:.3f}..{:.3f}'
                    .format(log_prefix, body[0], body[2], body[1], body[3]))
+        out.append('{}info  header        {:.3f} units tall, sockets hang from '
+                   'y {:.3f}'.format(log_prefix, body[3] - header_baseline(body),
+                                     header_baseline(body)))
 
     handle = vs.FInGroup(group) if group else None
     guard = 0
@@ -3359,10 +3380,10 @@ def measure(device, group, log_prefix='  ', upi=None, scale=1.0):
             sbox = bounds(handle)
             if sbox and body:
                 centre_y = (sbox[1] + sbox[3]) / 2.0
-                drop_units = body[3] - centre_y
+                drop_units = header_baseline(body) - centre_y
                 divisor = (upi or 1.0) * (scale or 1.0)
                 out.append('{}info  socket {:<8} edge x {:+.3f}   {:.4f} units = '
-                           '{:.3f}" on paper'.format(
+                           '{:.3f}" below the header'.format(
                                log_prefix, name,
                                (sbox[0] + sbox[2]) / 2.0 - (body[0] + body[2]) / 2.0,
                                drop_units, drop_units / divisor))

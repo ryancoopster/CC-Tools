@@ -9,9 +9,16 @@ and every socket after it is **0.25" below the last**, per side. Sockets stack
 from the top on a fixed pitch rather than spreading across the block's height,
 so a tall device keeps the same spacing as a short one.
 
-Stated in inches, applied in document units. `units_per_inch()` probes
-`vs.GetUnits()` and reports which branch it took, because a wrong conversion
-would displace every socket by a constant factor and look like a placement bug.
+Sockets hang from the **header baseline** — local `y = 0`, where ConnectCAD's
+name/make header meets the rectangle it was given. `CC_DeviceFromShape` adds the
+header above your rectangle, so the top of the block is a header's height higher
+and measuring from it puts the whole stack too high.
+
+Stated in inches on the printed sheet, applied in document units × layer scale.
+Document units are assumed to be inches: `GetUnits()` returns several values and
+picking one by shape gave 25.0 on an inch drawing, multiplying every drop by 25.
+The raw values are logged so the right field can be identified from evidence if
+this ever needs to work in metric.
 
 ## Drawing preferences
 
