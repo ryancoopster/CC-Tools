@@ -15,8 +15,10 @@ TYPE_OTHER = 2
 class Obj:
     """One fake plug-in object. `fields` is an ordered dict of field -> value."""
     _next = [1]
+    _all = []          # every object made, so NextObj can find runtime siblings
 
     def __init__(self, record, fields, children=None):
+        Obj._all.append(self)
         self.id = Obj._next[0]
         Obj._next[0] += 1
         self.record = record
@@ -107,7 +109,19 @@ def build_vs(doc, selected=()):
         return h.children[0] if isinstance(h, Obj) and h.children else None
 
     def NextObj(h):
-        return doc._next.get(id(h))
+        nxt = doc._next.get(id(h))
+        if nxt is not None:
+            return nxt
+        # Groups built during a test (a device's profile group, say) are not in
+        # the document index, so fall back to finding h's parent by scan.
+        for candidate in Obj._all:
+            kids = getattr(candidate, 'children', None)
+            if not kids:
+                continue
+            for i, kid in enumerate(kids):
+                if kid is h:
+                    return kids[i + 1] if i + 1 < len(kids) else None
+        return None
 
     def GetLayer(h):
         for name, objs in zip(layer_handles, doc.layers):

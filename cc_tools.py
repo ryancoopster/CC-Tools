@@ -3117,6 +3117,15 @@ def probe_make_device(name, x, y, width, height, socket_specs, log):
         return device, False
     log.append('  ok    profile group found')
 
+    # Measured once, before any socket is added, so a socket already placed
+    # cannot enlarge the body the next one is measured against.
+    body_box = body_bounds(group)
+    if body_box:
+        log.append('  info  body (local)   x {:.3f}..{:.3f}   y {:.3f}..{:.3f}'
+                   .format(body_box[0], body_box[2], body_box[1], body_box[3]))
+    else:
+        log.append('  WARN  device body not measurable; sockets left unplaced')
+
     made = 0
     for spec in socket_specs:
         symbol_name, socket_name, socket_type, side, offset = spec
@@ -3142,7 +3151,7 @@ def probe_make_device(name, x, y, width, height, socket_specs, log):
         # dimensions -- a 2.0 x 1.0 request came back 3.0 x 1.4 -- so the
         # socket is moved onto the device's MEASURED edge. Anything derived
         # from the requested width lands in the wrong place.
-        place_socket(socket, bounds(device), side, offset)
+        place_socket(socket, body_box, side, offset)
         write_field(socket, 'name', socket_name)
         write_field(socket, 'tag', socket_name)
         write_field(socket, 'type', socket_type)
@@ -3166,16 +3175,45 @@ def probe_make_device(name, x, y, width, height, socket_specs, log):
     return device, made == len(socket_specs)
 
 
-def place_socket(socket, device_box, side, height_fraction):
-    """Move a socket onto the device's edge, from measured geometry.
+def body_bounds(group):
+    """The device body's bounds, in the frame its sockets actually live in.
 
-    `side` is -1 for the left edge, +1 for the right; `height_fraction` is 0 at
-    the device's bottom and 1 at its top. Both are resolved against the device's
-    actual bounds, so this holds whatever size ConnectCAD decided on."""
+    A socket sits inside the device's profile group, whose coordinates are
+    device-LOCAL, while GetBBox on the device itself reports DOCUMENT
+    coordinates. Mixing the two places a socket correctly only when the device
+    happens to straddle the origin -- which is exactly what made one probe
+    device look right and the other land far off to the side.
+
+    Measuring the profile group's own geometry (everything in it that is not a
+    socket) gives the body's extent in the same frame as the sockets, so no
+    conversion is needed and none can be got wrong."""
+    if not group:
+        return None
+    box = None
+    handle = vs.FInGroup(group)
+    guard = 0
+    while handle and guard < 200:
+        guard += 1
+        if classify(handle) != 'socket':
+            part = bounds(handle)
+            if part:
+                box = part if box is None else (
+                    min(box[0], part[0]), min(box[1], part[1]),
+                    max(box[2], part[2]), max(box[3], part[3]))
+        handle = vs.NextObj(handle)
+    return box
+
+
+def place_socket(socket, body_box, side, height_fraction):
+    """Move a socket onto the device body's edge.
+
+    `body_box` must come from body_bounds -- the device's own bounds are in a
+    different coordinate frame. `side` is -1 for the left edge, +1 for the
+    right; `height_fraction` is 0 at the body's bottom and 1 at its top."""
     socket_box = bounds(socket)
-    if not socket_box or not device_box:
+    if not socket_box or not body_box:
         return False
-    left, bottom, right, top = device_box
+    left, bottom, right, top = body_box
     centre_x = (socket_box[0] + socket_box[2]) / 2.0
     centre_y = (socket_box[1] + socket_box[3]) / 2.0
     target_x = right if side > 0 else left
@@ -3220,10 +3258,14 @@ def measure(device, group, log_prefix='  '):
     out = []
     box = bounds(device)
     if box:
-        out.append('{}info  device bounds  x {:.3f}..{:.3f}   y {:.3f}..{:.3f}'
+        out.append('{}info  device (doc)   x {:.3f}..{:.3f}   y {:.3f}..{:.3f}'
                    .format(log_prefix, box[0], box[2], box[1], box[3]))
     else:
         out.append('{}info  device bounds unavailable'.format(log_prefix))
+    body = body_bounds(group)
+    if body:
+        out.append('{}info  body (local)   x {:.3f}..{:.3f}   y {:.3f}..{:.3f}'
+                   .format(log_prefix, body[0], body[2], body[1], body[3]))
 
     handle = vs.FInGroup(group) if group else None
     guard = 0
@@ -3233,11 +3275,13 @@ def measure(device, group, log_prefix='  '):
             field = resolve_field(handle, SOCKET_NAME_FIELDS)
             name = read_field(handle, field) if field else '?'
             sbox = bounds(handle)
-            if sbox and box:
+            if sbox and body:
                 out.append('{}info  socket {:<8} x {:.3f}..{:.3f}  y {:.3f}..{:.3f}'
-                           '   (device-relative x {:+.3f}, y {:+.3f})'.format(
+                           '   (body-relative x {:+.3f}, y {:+.3f})'.format(
                                log_prefix, name, sbox[0], sbox[2], sbox[1],
-                               sbox[3], sbox[0] - box[0], sbox[1] - box[1]))
+                               sbox[3],
+                               (sbox[0] + sbox[2]) / 2.0 - (body[0] + body[2]) / 2.0,
+                               (sbox[1] + sbox[3]) / 2.0 - body[1]))
             elif sbox:
                 out.append('{}info  socket {:<8} x {:.3f}..{:.3f}  y {:.3f}..{:.3f}'
                            .format(log_prefix, name, sbox[0], sbox[2],

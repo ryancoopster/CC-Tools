@@ -19,7 +19,11 @@ def wire_mock(vs, mod, *, device_ok=True, group_ok=True, symbol_ok=True,
     vs.Rect = lambda *a: None
     vs.LNewObj = lambda: Obj('Rect', {})
     vs.DelObject = lambda h: deleted.append(h)
-    vs.GetBBox = lambda h: (0.0, 0.0, 2.0, 1.0)
+    # Two frames: a device reports document bounds, profile-group contents
+    # report device-local ones. Conflating them is the bug under test.
+    boxes = {}
+    made['boxes'] = boxes
+    vs.GetBBox = lambda h: boxes.get(id(h), (0.0, 1.0, 2.0, 0.0))
     made['deleted'] = deleted
     moves = []
     made['moves'] = moves
@@ -64,7 +68,9 @@ def wire_mock(vs, mod, *, device_ok=True, group_ok=True, symbol_ok=True,
         if not group_ok:
             return None
         if h not in groups:
-            groups[h] = Obj('Group', {})
+            # CC_DeviceFromShape duplicates the source shape into the group;
+            # that shape is the device body and is what body_bounds measures.
+            groups[h] = Obj('Group', {}, children=[Obj('Rect', {})])
         return groups[h]
     vs.GetCustomObjectProfileGroup = profile_group
 
@@ -172,9 +178,11 @@ for name in sorted(os.listdir(m6.BASE_FOLDER), reverse=True):
         log = open(os.path.join(m6.BASE_FOLDER, name), encoding='utf-8').read()
         break
 check('T9 a log was written', log is not None)
-check('T9 device bounds reported', 'device bounds' in (log or ''), (log or '')[:200])
-check('T9 socket position reported relative to the device',
-      'device-relative' in (log or ''), (log or '')[:400])
+check('T9 device bounds reported', 'device (doc)' in (log or ''), (log or '')[:200])
+check('T9 body bounds reported in the local frame',
+      'body (local)' in (log or ''), (log or '')[:400])
+check('T9 socket position reported relative to the body',
+      'body-relative' in (log or ''), (log or '')[:400])
 
 
 # ── T10: sockets are placed from MEASURED bounds, not requested size ────────
@@ -216,5 +224,50 @@ src_text = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__f
                              'cc_tools.py'), encoding='utf-8').read()
 check('T11 no document-wide loose-rectangle count',
       'loose rectangle(s) remain' not in src_text)
+
+
+# ── T12: the two coordinate frames are not conflated ────────────────────────
+# A socket lives in the device's profile group (device-LOCAL coordinates);
+# GetBBox on the device reports DOCUMENT coordinates. Placing from the device's
+# own bounds works only for a device straddling the origin, which is why one
+# probe device looked right and the other landed far off to the side.
+m12, vs12 = load(Doc([[dev('x')]]))
+moved12 = []
+vs12.HMove = lambda h, dx, dy: moved12.append((round(dx, 4), round(dy, 4)))
+
+body = Obj('Rect', {})                       # the duplicated body shape
+group = Obj('Group', {}, children=[body])
+socket12 = Obj('Socket', {})
+group.children.append(socket12)
+
+# Body sits at local -1.5..1.5 x 0..1.4 regardless of where the device is.
+local = {id(body): (-1.5, 1.4, 1.5, 0.0), id(socket12): (-0.195, 0.142, 0.062, -0.063)}
+vs12.GetBBox = lambda h: local.get(id(h), (0.0, 0.0, 0.0, 0.0))
+
+measured = m12.body_bounds(group)
+check('T12 body measured in the local frame',
+      measured == (-1.5, 0.0, 1.5, 1.4), repr(measured))
+check('T12 sockets excluded from the body measurement',
+      measured[2] == 1.5, repr(measured))
+
+m12.place_socket(socket12, measured, -1, 0.75)
+# socket centre (-0.0665, 0.0395) -> local left edge -1.5 at 75% of 1.4
+check('T12 left socket moves to the LOCAL left edge',
+      moved12 and abs(moved12[-1][0] - (-1.5 - -0.0665)) < 0.001, repr(moved12))
+check('T12 vertical uses the body height',
+      moved12 and abs(moved12[-1][1] - (1.05 - 0.0395)) < 0.001, repr(moved12))
+
+# The device's document position must not influence placement at all.
+moved12[:] = []
+m12.place_socket(socket12, measured, -1, 0.75)
+first = moved12[-1]
+local[id(body)] = (-1.5, 1.4, 1.5, 0.0)      # same body, device moved elsewhere
+moved12[:] = []
+m12.place_socket(socket12, m12.body_bounds(group), -1, 0.75)
+check('T12 placement is independent of where the device sits',
+      moved12[-1] == first, '%r vs %r' % (moved12[-1], first))
+
+check('T12 no body -> refused, not guessed',
+      m12.place_socket(socket12, None, 1, 0.5) is False)
 
 R.report_and_exit()
