@@ -3025,6 +3025,12 @@ DEFAULTS_FOLDER = 14          # BuildResourceList: Defaults folder
 # House convention for socket placement, read off the Chautauqua and Geffen
 # drawings: the first socket sits half an inch below the top of the device
 # block, and every socket after it is a quarter inch below the last.
+#
+# These are inches ON THE PRINTED SHEET. Design-layer geometry is stored at
+# world size and the layer scale maps it to paper, so a schematic at 1:2 needs
+# twice the drawing distance to print the same gap. Ignoring that makes the
+# spacing wrong by exactly the scale factor -- which looks like a placement
+# bug and is not one.
 SOCKET_FIRST_DROP_IN = 0.5
 SOCKET_PITCH_IN = 0.25
 SOCKET_SYMBOLS = ['skt_R', 'skt_L', 'skt_R_loop', 'skt_L_loop']
@@ -3133,9 +3139,13 @@ def probe_make_device(name, x, y, width, height, socket_specs, log):
         log.append('  WARN  device body not measurable; sockets left unplaced')
 
     upi, how = units_per_inch()
+    scale, scale_note = layer_scale()
     log.append('  info  units        {:.4f} unit(s) per inch  ({})'.format(upi, how))
-    log.append('  info  spacing      first {:.2f}" below the top, then {:.2f}" apart'
-               .format(SOCKET_FIRST_DROP_IN, SOCKET_PITCH_IN))
+    log.append('  info  layer scale  {}'.format(scale_note))
+    log.append('  info  spacing      first {:.2f}" then {:.2f}" ON PAPER'
+               ' = {:.4f} / {:.4f} drawing units'.format(
+                   SOCKET_FIRST_DROP_IN, SOCKET_PITCH_IN,
+                   socket_drop(0, upi, scale), SOCKET_PITCH_IN * upi * scale))
 
     made = 0
     per_side = {}
@@ -3165,7 +3175,7 @@ def probe_make_device(name, x, y, width, height, socket_specs, log):
         # dimensions -- a 2.0 x 1.0 request came back 3.0 x 1.4 -- so the
         # socket is moved onto the device's MEASURED edge. Anything derived
         # from the requested width lands in the wrong place.
-        place_socket(socket, body_box, side, index, upi)
+        place_socket(socket, body_box, side, index, upi, scale)
         write_field(socket, 'name', socket_name)
         write_field(socket, 'tag', socket_name)
         write_field(socket, 'type', socket_type)
@@ -3185,7 +3195,7 @@ def probe_make_device(name, x, y, width, height, socket_specs, log):
     except Exception:
         pass
 
-    log.extend(measure(device, group, log_prefix='  ', upi=upi))
+    log.extend(measure(device, group, log_prefix='  ', upi=upi, scale=scale))
     return device, made == len(socket_specs)
 
 
@@ -3216,9 +3226,30 @@ def units_per_inch():
     return 1.0, 'defaulted to 1 unit = 1 inch (GetUnits unavailable)'
 
 
-def socket_drop(index, upi):
-    """How far below the device's top edge socket `index` sits, in units."""
-    return (SOCKET_FIRST_DROP_IN + index * SOCKET_PITCH_IN) * upi
+def layer_scale(layer=None):
+    """The active layer's scale, and how it was obtained.
+
+    A scale of 48 means 1:48 -- 48 drawing units print as one inch. Returned
+    as 1.0 when it cannot be read, which draws at world size rather than
+    guessing a factor."""
+    getter = getattr(vs, 'GetLScale', None)
+    if getter is None:
+        return 1.0, 'GetLScale unavailable; treating the layer as 1:1'
+    try:
+        value = float(getter(layer if layer is not None else vs.ActLayer()))
+    except Exception as err:
+        return 1.0, 'GetLScale failed ({}); treating the layer as 1:1'.format(err)
+    if value <= 0:
+        return 1.0, 'GetLScale returned {}; treating the layer as 1:1'.format(value)
+    return value, '1:{:g}'.format(value)
+
+
+def socket_drop(index, upi, scale=1.0):
+    """How far below the device's top edge socket `index` sits, in drawing units.
+
+    The convention is in printed inches, so the layer scale is applied: at 1:2
+    a quarter-inch gap on paper is half a unit in the drawing."""
+    return (SOCKET_FIRST_DROP_IN + index * SOCKET_PITCH_IN) * upi * scale
 
 
 def body_bounds(group):
@@ -3250,7 +3281,7 @@ def body_bounds(group):
     return box
 
 
-def place_socket(socket, body_box, side, index, upi):
+def place_socket(socket, body_box, side, index, upi, scale=1.0):
     """Move a socket onto the device body's edge at its place in the stack.
 
     `body_box` must come from body_bounds -- the device's own bounds are in a
@@ -3265,7 +3296,7 @@ def place_socket(socket, body_box, side, index, upi):
     centre_x = (socket_box[0] + socket_box[2]) / 2.0
     centre_y = (socket_box[1] + socket_box[3]) / 2.0
     target_x = right if side > 0 else left
-    target_y = top - socket_drop(index, upi)
+    target_y = top - socket_drop(index, upi, scale)
     try:
         vs.HMove(socket, target_x - centre_x, target_y - centre_y)
         return True
@@ -3297,7 +3328,7 @@ def bounds(handle):
     return (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
 
 
-def measure(device, group, log_prefix='  ', upi=None):
+def measure(device, group, log_prefix='  ', upi=None, scale=1.0):
     """Report where the device and its sockets actually landed.
 
     Placement is the one thing the disassembly could not settle: the local
@@ -3328,11 +3359,12 @@ def measure(device, group, log_prefix='  ', upi=None):
             if sbox and body:
                 centre_y = (sbox[1] + sbox[3]) / 2.0
                 drop_units = body[3] - centre_y
-                out.append('{}info  socket {:<8} edge x {:+.3f}   {:.3f}" below the '
-                           'top edge'.format(
+                divisor = (upi or 1.0) * (scale or 1.0)
+                out.append('{}info  socket {:<8} edge x {:+.3f}   {:.4f} units = '
+                           '{:.3f}" on paper'.format(
                                log_prefix, name,
                                (sbox[0] + sbox[2]) / 2.0 - (body[0] + body[2]) / 2.0,
-                               drop_units / upi if upi else drop_units))
+                               drop_units, drop_units / divisor))
             elif sbox:
                 out.append('{}info  socket {:<8} x {:.3f}..{:.3f}  y {:.3f}..{:.3f}'
                            .format(log_prefix, name, sbox[0], sbox[2],

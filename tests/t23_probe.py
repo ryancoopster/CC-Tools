@@ -180,8 +180,10 @@ check('T9 a log was written', log is not None)
 check('T9 device bounds reported', 'device (doc)' in (log or ''), (log or '')[:200])
 check('T9 body bounds reported in the local frame',
       'body (local)' in (log or ''), (log or '')[:400])
-check('T9 each socket drop reported in inches',
-      'below the top edge' in (log or ''), (log or '')[:400])
+check('T9 each socket drop reported in units AND paper inches',
+      'on paper' in (log or ''), (log or '')[:400])
+check('T9 the layer scale is reported',
+      'layer scale' in (log or ''), (log or '')[:400])
 check('T9 the unit conversion is reported',
       'unit(s) per inch' in (log or ''), (log or '')[:400])
 
@@ -201,7 +203,7 @@ device_box = (-1.5, 0.0, 1.5, 1.4)          # left, bottom, right, top
 check('T10 bounds normalises top/bottom order',
       m10.bounds(socket) == (-0.195, -0.063, 0.062, 0.142), repr(m10.bounds(socket)))
 
-m10.place_socket(socket, device_box, 1, 0, 1.0)
+m10.place_socket(socket, device_box, 1, 0, 1.0, 1.0)
 # socket centre is (-0.0665, 0.0395); target is the right edge, 0.5" below top
 check('T10 right socket lands on the right edge',
       moved and abs(moved[-1][0] - (1.5 - -0.0665)) < 0.001, repr(moved))
@@ -209,13 +211,13 @@ check('T10 first socket sits half an inch below the top',
       moved and abs(moved[-1][1] - ((1.4 - 0.5) - 0.0395)) < 0.001, repr(moved))
 
 moved[:] = []
-m10.place_socket(socket, device_box, -1, 0, 1.0)
+m10.place_socket(socket, device_box, -1, 0, 1.0, 1.0)
 check('T10 left socket lands on the left edge',
       moved and abs(moved[-1][0] - (-1.5 - -0.0665)) < 0.001, repr(moved))
 
 moved[:] = []
 check('T10 missing bounds is refused, not guessed',
-      m10.place_socket(socket, None, 1, 0, 1.0) is False and moved == [])
+      m10.place_socket(socket, None, 1, 0, 1.0, 1.0) is False and moved == [])
 
 # ── T11: the stray-rectangle warning is gone ────────────────────────────────
 # It counted every rectangle in the document, so a real drawing's own
@@ -251,7 +253,7 @@ check('T12 body measured in the local frame',
 check('T12 sockets excluded from the body measurement',
       measured[2] == 1.5, repr(measured))
 
-m12.place_socket(socket12, measured, -1, 0, 1.0)
+m12.place_socket(socket12, measured, -1, 0, 1.0, 1.0)
 check('T12 left socket moves to the LOCAL left edge',
       moved12 and abs(moved12[-1][0] - (-1.5 - -0.0665)) < 0.001, repr(moved12))
 check('T12 vertical measured from the body TOP',
@@ -259,16 +261,16 @@ check('T12 vertical measured from the body TOP',
 
 # The device's document position must not influence placement at all.
 moved12[:] = []
-m12.place_socket(socket12, measured, -1, 0, 1.0)
+m12.place_socket(socket12, measured, -1, 0, 1.0, 1.0)
 first = moved12[-1]
 local[id(body)] = (-1.5, 1.4, 1.5, 0.0)      # same body, device moved elsewhere
 moved12[:] = []
-m12.place_socket(socket12, m12.body_bounds(group), -1, 0, 1.0)
+m12.place_socket(socket12, m12.body_bounds(group), -1, 0, 1.0, 1.0)
 check('T12 placement is independent of where the device sits',
       moved12[-1] == first, '%r vs %r' % (moved12[-1], first))
 
 check('T12 no body -> refused, not guessed',
-      m12.place_socket(socket12, None, 1, 0, 1.0) is False)
+      m12.place_socket(socket12, None, 1, 0, 1.0, 1.0) is False)
 
 
 # ── T13: the house spacing convention ───────────────────────────────────────
@@ -294,7 +296,7 @@ tall_body = (-1.5, -6.0, 1.5, 1.4)
 for body in (short_body, tall_body):
     moved13[:] = []
     for i in range(3):
-        m13.place_socket(sk, body, 1, i, 1.0)
+        m13.place_socket(sk, body, 1, i, 1.0, 1.0)
     gaps = [round(moved13[i] - moved13[i + 1], 4) for i in range(len(moved13) - 1)]
     check('T13 pitch holds on a {} block'.format(
         'short' if body is short_body else 'tall'),
@@ -309,5 +311,38 @@ drops = [dy for dx, dy in made14['moves']]
 check('T14 three sockets placed per device', len(drops) == 6, repr(drops))
 check('T14 each side restarts the stack',
       drops[:3] == drops[3:], repr(drops))
+
+
+# ── T15: the convention is PAPER inches, so layer scale applies ─────────────
+# Design-layer geometry is stored at world size; the layer scale maps it to the
+# printed sheet. A schematic at 1:2 needs twice the drawing distance to print
+# the same gap, so ignoring scale is wrong by exactly the scale factor.
+m15, vs15 = load(Doc([[dev('x')]]))
+check('T15 1:1 leaves the paper figure alone',
+      m15.socket_drop(0, 1.0, 1.0) == 0.5)
+check('T15 1:2 doubles the drawing distance',
+      m15.socket_drop(0, 1.0, 2.0) == 1.0, repr(m15.socket_drop(0, 1.0, 2.0)))
+check('T15 pitch scales too',
+      m15.socket_drop(1, 1.0, 2.0) - m15.socket_drop(0, 1.0, 2.0) == 0.5)
+check('T15 1:48 scales as far',
+      m15.socket_drop(0, 1.0, 48.0) == 24.0, repr(m15.socket_drop(0, 1.0, 48.0)))
+check('T15 units and scale compose',
+      m15.socket_drop(0, 25.4, 2.0) == 0.5 * 25.4 * 2.0)
+
+# An unreadable scale must draw at world size, not guess a factor.
+vs15.GetLScale = lambda layer: 0
+value, note = m15.layer_scale()
+check('T15 a nonsense scale falls back to 1:1', value == 1.0, repr((value, note)))
+def boom(layer):
+    raise RuntimeError('no layer')
+vs15.GetLScale = boom
+value, note = m15.layer_scale()
+check('T15 a failing scale falls back to 1:1 and says so',
+      value == 1.0 and 'GetLScale failed' in note, repr(note))
+
+vs15.GetLScale = lambda layer: 2.0
+value, note = m15.layer_scale()
+check('T15 a real scale is reported as a ratio', value == 2.0 and note == '1:2',
+      repr(note))
 
 R.report_and_exit()
