@@ -2,6 +2,17 @@
 
 Things asked for that aren't built yet, with enough context to pick up cold.
 
+## Socket spacing — house convention
+
+Implemented: the first socket sits **0.5" below the top** of the device block,
+and every socket after it is **0.25" below the last**, per side. Sockets stack
+from the top on a fixed pitch rather than spreading across the block's height,
+so a tall device keeps the same spacing as a short one.
+
+Stated in inches, applied in document units. `units_per_inch()` probes
+`vs.GetUnits()` and reports which branch it took, because a wrong conversion
+would displace every socket by a constant factor and look like a placement bug.
+
 ## Drawing preferences
 
 Generated objects currently take whatever ConnectCAD defaults to. Two choices

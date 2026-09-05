@@ -3021,6 +3021,12 @@ def tool_export_reference():
 
 TYPE_SYMDEF = 16
 DEFAULTS_FOLDER = 14          # BuildResourceList: Defaults folder
+
+# House convention for socket placement, read off the Chautauqua and Geffen
+# drawings: the first socket sits half an inch below the top of the device
+# block, and every socket after it is a quarter inch below the last.
+SOCKET_FIRST_DROP_IN = 0.5
+SOCKET_PITCH_IN = 0.25
 SOCKET_SYMBOLS = ['skt_R', 'skt_L', 'skt_R_loop', 'skt_L_loop']
 PROBE_PREFIX = 'CCTOOLS PROBE'
 
@@ -3126,9 +3132,17 @@ def probe_make_device(name, x, y, width, height, socket_specs, log):
     else:
         log.append('  WARN  device body not measurable; sockets left unplaced')
 
+    upi, how = units_per_inch()
+    log.append('  info  units        {:.4f} unit(s) per inch  ({})'.format(upi, how))
+    log.append('  info  spacing      first {:.2f}" below the top, then {:.2f}" apart'
+               .format(SOCKET_FIRST_DROP_IN, SOCKET_PITCH_IN))
+
     made = 0
+    per_side = {}
     for spec in socket_specs:
-        symbol_name, socket_name, socket_type, side, offset = spec
+        symbol_name, socket_name, socket_type, side = spec
+        index = per_side.get(side, 0)
+        per_side[side] = index + 1
         symbol = import_socket_symbol(symbol_name)
         if not symbol:
             log.append('  FAIL  socket symbol {} not found'.format(symbol_name))
@@ -3151,7 +3165,7 @@ def probe_make_device(name, x, y, width, height, socket_specs, log):
         # dimensions -- a 2.0 x 1.0 request came back 3.0 x 1.4 -- so the
         # socket is moved onto the device's MEASURED edge. Anything derived
         # from the requested width lands in the wrong place.
-        place_socket(socket, body_box, side, offset)
+        place_socket(socket, body_box, side, index, upi)
         write_field(socket, 'name', socket_name)
         write_field(socket, 'tag', socket_name)
         write_field(socket, 'type', socket_type)
@@ -3171,8 +3185,40 @@ def probe_make_device(name, x, y, width, height, socket_specs, log):
     except Exception:
         pass
 
-    log.extend(measure(device, group, log_prefix='  '))
+    log.extend(measure(device, group, log_prefix='  ', upi=upi))
     return device, made == len(socket_specs)
+
+
+def units_per_inch():
+    """How many document units make an inch, and how that was decided.
+
+    Drawing coordinates are in document units, but the socket convention is
+    stated in inches, so the two have to be reconciled. GetUnits' shape varies
+    between builds, so the value is probed rather than assumed -- and the
+    probe reports which branch it took, since a wrong conversion would put
+    every socket in the wrong place by a constant factor."""
+    getter = getattr(vs, 'GetUnits', None)
+    if getter is not None:
+        try:
+            result = getter()
+        except Exception:
+            result = None
+        values = result if isinstance(result, (list, tuple)) else [result]
+        for value in values:
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                continue
+            # A plausible units-per-inch: 1 for inches, 25.4 for millimetres,
+            # 2.54 for centimetres. Anything else is some other field.
+            if 0.01 < number < 1000 and number not in (0.0,):
+                return number, 'GetUnits() -> {}'.format(number)
+    return 1.0, 'defaulted to 1 unit = 1 inch (GetUnits unavailable)'
+
+
+def socket_drop(index, upi):
+    """How far below the device's top edge socket `index` sits, in units."""
+    return (SOCKET_FIRST_DROP_IN + index * SOCKET_PITCH_IN) * upi
 
 
 def body_bounds(group):
@@ -3204,20 +3250,22 @@ def body_bounds(group):
     return box
 
 
-def place_socket(socket, body_box, side, height_fraction):
-    """Move a socket onto the device body's edge.
+def place_socket(socket, body_box, side, index, upi):
+    """Move a socket onto the device body's edge at its place in the stack.
 
     `body_box` must come from body_bounds -- the device's own bounds are in a
     different coordinate frame. `side` is -1 for the left edge, +1 for the
-    right; `height_fraction` is 0 at the body's bottom and 1 at its top."""
+    right. `index` is the socket's position on that side, 0 upwards; they run
+    downward from the top of the block on the house pitch, not spread across
+    the block's height, so a device keeps its spacing however tall it is."""
     socket_box = bounds(socket)
     if not socket_box or not body_box:
         return False
-    left, bottom, right, top = body_box
+    left, _bottom, right, top = body_box
     centre_x = (socket_box[0] + socket_box[2]) / 2.0
     centre_y = (socket_box[1] + socket_box[3]) / 2.0
     target_x = right if side > 0 else left
-    target_y = bottom + (top - bottom) * height_fraction
+    target_y = top - socket_drop(index, upi)
     try:
         vs.HMove(socket, target_x - centre_x, target_y - centre_y)
         return True
@@ -3249,13 +3297,15 @@ def bounds(handle):
     return (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
 
 
-def measure(device, group, log_prefix='  '):
+def measure(device, group, log_prefix='  ', upi=None):
     """Report where the device and its sockets actually landed.
 
     Placement is the one thing the disassembly could not settle: the local
     frame's origin is documented, but where the label symbol sits relative to
     it is not. Measuring beats another round of guessing from a screenshot."""
     out = []
+    if upi is None:
+        upi = units_per_inch()[0]
     box = bounds(device)
     if box:
         out.append('{}info  device (doc)   x {:.3f}..{:.3f}   y {:.3f}..{:.3f}'
@@ -3276,12 +3326,13 @@ def measure(device, group, log_prefix='  '):
             name = read_field(handle, field) if field else '?'
             sbox = bounds(handle)
             if sbox and body:
-                out.append('{}info  socket {:<8} x {:.3f}..{:.3f}  y {:.3f}..{:.3f}'
-                           '   (body-relative x {:+.3f}, y {:+.3f})'.format(
-                               log_prefix, name, sbox[0], sbox[2], sbox[1],
-                               sbox[3],
+                centre_y = (sbox[1] + sbox[3]) / 2.0
+                drop_units = body[3] - centre_y
+                out.append('{}info  socket {:<8} edge x {:+.3f}   {:.3f}" below the '
+                           'top edge'.format(
+                               log_prefix, name,
                                (sbox[0] + sbox[2]) / 2.0 - (body[0] + body[2]) / 2.0,
-                               (sbox[1] + sbox[3]) / 2.0 - body[1]))
+                               drop_units / upi if upi else drop_units))
             elif sbox:
                 out.append('{}info  socket {:<8} x {:.3f}..{:.3f}  y {:.3f}..{:.3f}'
                            .format(log_prefix, name, sbox[0], sbox[2],
@@ -3341,13 +3392,17 @@ def tool_creation_probe():
     log.append('1. Device with sockets (source)')
     first, first_sockets = probe_make_device(
         PROBE_PREFIX + ' A', 0, 0, 2.0, 1.0,
-        [('skt_R', 'OUT 1', 'OUT', 1, 0.75)], log)
+        [('skt_R', 'OUT 1', 'OUT', 1),
+         ('skt_R', 'OUT 2', 'OUT', 1),
+         ('skt_R', 'OUT 3', 'OUT', 1)], log)
     log.append('')
 
     log.append('2. Device with sockets (destination)')
     second, second_sockets = probe_make_device(
         PROBE_PREFIX + ' B', 6.0, 0, 2.0, 1.0,
-        [('skt_L', 'IN 1', 'IN', -1, 0.75)], log)
+        [('skt_L', 'IN 1', 'IN', -1),
+         ('skt_L', 'IN 2', 'IN', -1),
+         ('skt_L', 'IN 3', 'IN', -1)], log)
     log.append('')
 
     log.append('3. Wiring them with ConnectSelected')

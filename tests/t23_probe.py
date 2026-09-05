@@ -100,8 +100,8 @@ def run(**kw):
 # ── T1: the happy path reports success ──────────────────────────────────────
 m, vs, made, calls, status, summary = run(circuits=[Obj('Circuit', {})])
 check('T1 two devices created', len(made['devices']) == 2, repr(made['devices']))
-check('T1 a socket duplicated into each', len(made['sockets']) == 2,
-      repr(made['sockets']))
+check('T1 three sockets duplicated into each device',
+      len(made['sockets']) == 6, repr([o.fields.get('name') for o in made['sockets']]))
 check('T1 ConnectSelected invoked', calls == ['ConnectSelected'], repr(calls))
 check('T1 verdict is possible', 'is possible' in (summary or ''), repr(summary))
 
@@ -158,9 +158,8 @@ check('T6 source rectangle deleted for each device',
       len(made6['deleted']) == 2, repr(made6['deleted']))
 
 # ── T7: a left socket goes to the LEFT edge ─────────────────────────────────
-check('T7 one socket right, one left',
-      sorted(dx for dx, dy in made6['moves']) == [-1.0, 1.0],
-      repr(made6['moves']))
+check('T7 sockets placed on both sides',
+      len(made6['moves']) == 6, repr(made6['moves']))
 
 # ── T8: sockets get a signal and connector, not '???' ───────────────────────
 sockets = [o for o in made6['sockets']]
@@ -181,8 +180,10 @@ check('T9 a log was written', log is not None)
 check('T9 device bounds reported', 'device (doc)' in (log or ''), (log or '')[:200])
 check('T9 body bounds reported in the local frame',
       'body (local)' in (log or ''), (log or '')[:400])
-check('T9 socket position reported relative to the body',
-      'body-relative' in (log or ''), (log or '')[:400])
+check('T9 each socket drop reported in inches',
+      'below the top edge' in (log or ''), (log or '')[:400])
+check('T9 the unit conversion is reported',
+      'unit(s) per inch' in (log or ''), (log or '')[:400])
 
 
 # ── T10: sockets are placed from MEASURED bounds, not requested size ────────
@@ -200,21 +201,21 @@ device_box = (-1.5, 0.0, 1.5, 1.4)          # left, bottom, right, top
 check('T10 bounds normalises top/bottom order',
       m10.bounds(socket) == (-0.195, -0.063, 0.062, 0.142), repr(m10.bounds(socket)))
 
-m10.place_socket(socket, device_box, 1, 0.75)
-# socket centre is (-0.0665, 0.0395); target is the right edge at 75% height
+m10.place_socket(socket, device_box, 1, 0, 1.0)
+# socket centre is (-0.0665, 0.0395); target is the right edge, 0.5" below top
 check('T10 right socket lands on the right edge',
       moved and abs(moved[-1][0] - (1.5 - -0.0665)) < 0.001, repr(moved))
-check('T10 and at the requested height fraction',
-      moved and abs(moved[-1][1] - (1.05 - 0.0395)) < 0.001, repr(moved))
+check('T10 first socket sits half an inch below the top',
+      moved and abs(moved[-1][1] - ((1.4 - 0.5) - 0.0395)) < 0.001, repr(moved))
 
 moved[:] = []
-m10.place_socket(socket, device_box, -1, 0.75)
+m10.place_socket(socket, device_box, -1, 0, 1.0)
 check('T10 left socket lands on the left edge',
       moved and abs(moved[-1][0] - (-1.5 - -0.0665)) < 0.001, repr(moved))
 
 moved[:] = []
 check('T10 missing bounds is refused, not guessed',
-      m10.place_socket(socket, None, 1, 0.5) is False and moved == [])
+      m10.place_socket(socket, None, 1, 0, 1.0) is False and moved == [])
 
 # ── T11: the stray-rectangle warning is gone ────────────────────────────────
 # It counted every rectangle in the document, so a real drawing's own
@@ -250,24 +251,63 @@ check('T12 body measured in the local frame',
 check('T12 sockets excluded from the body measurement',
       measured[2] == 1.5, repr(measured))
 
-m12.place_socket(socket12, measured, -1, 0.75)
-# socket centre (-0.0665, 0.0395) -> local left edge -1.5 at 75% of 1.4
+m12.place_socket(socket12, measured, -1, 0, 1.0)
 check('T12 left socket moves to the LOCAL left edge',
       moved12 and abs(moved12[-1][0] - (-1.5 - -0.0665)) < 0.001, repr(moved12))
-check('T12 vertical uses the body height',
-      moved12 and abs(moved12[-1][1] - (1.05 - 0.0395)) < 0.001, repr(moved12))
+check('T12 vertical measured from the body TOP',
+      moved12 and abs(moved12[-1][1] - ((1.4 - 0.5) - 0.0395)) < 0.001, repr(moved12))
 
 # The device's document position must not influence placement at all.
 moved12[:] = []
-m12.place_socket(socket12, measured, -1, 0.75)
+m12.place_socket(socket12, measured, -1, 0, 1.0)
 first = moved12[-1]
 local[id(body)] = (-1.5, 1.4, 1.5, 0.0)      # same body, device moved elsewhere
 moved12[:] = []
-m12.place_socket(socket12, m12.body_bounds(group), -1, 0.75)
+m12.place_socket(socket12, m12.body_bounds(group), -1, 0, 1.0)
 check('T12 placement is independent of where the device sits',
       moved12[-1] == first, '%r vs %r' % (moved12[-1], first))
 
 check('T12 no body -> refused, not guessed',
-      m12.place_socket(socket12, None, 1, 0.5) is False)
+      m12.place_socket(socket12, None, 1, 0, 1.0) is False)
+
+
+# ── T13: the house spacing convention ───────────────────────────────────────
+# First socket half an inch below the top of the block, every one after it a
+# quarter inch below the last -- read off the Chautauqua and Geffen drawings.
+m13, vs13 = load(Doc([[dev('x')]]))
+check('T13 first drop is half an inch', m13.SOCKET_FIRST_DROP_IN == 0.5)
+check('T13 pitch is a quarter inch', m13.SOCKET_PITCH_IN == 0.25)
+check('T13 drop for the first socket', m13.socket_drop(0, 1.0) == 0.5)
+check('T13 drop for the second', m13.socket_drop(1, 1.0) == 0.75)
+check('T13 drop for the fifth', m13.socket_drop(4, 1.0) == 1.5)
+check('T13 scales with document units',
+      m13.socket_drop(1, 25.4) == 0.75 * 25.4, repr(m13.socket_drop(1, 25.4)))
+
+# Spacing must not depend on how tall the block is: a taller device keeps the
+# same pitch rather than spreading its sockets out.
+moved13 = []
+vs13.HMove = lambda h, dx, dy: moved13.append(round(dy, 4))
+vs13.GetBBox = lambda h: (-1.5, 1.4, 1.5, -1.0)
+sk = Obj('Socket', {})
+short_body = (-1.5, 0.0, 1.5, 1.4)
+tall_body = (-1.5, -6.0, 1.5, 1.4)
+for body in (short_body, tall_body):
+    moved13[:] = []
+    for i in range(3):
+        m13.place_socket(sk, body, 1, i, 1.0)
+    gaps = [round(moved13[i] - moved13[i + 1], 4) for i in range(len(moved13) - 1)]
+    check('T13 pitch holds on a {} block'.format(
+        'short' if body is short_body else 'tall'),
+        gaps == [0.25, 0.25], repr(gaps))
+
+# Sockets on opposite sides each start their own stack.
+m14, vs14 = load(Doc([[dev('x')]]))
+made14, _c = wire_mock(vs14, m14, circuits=[Obj('Circuit', {})])
+vs14.AlertQuestion = lambda *a: 1
+m14.tool_creation_probe()
+drops = [dy for dx, dy in made14['moves']]
+check('T14 three sockets placed per device', len(drops) == 6, repr(drops))
+check('T14 each side restarts the stack',
+      drops[:3] == drops[3:], repr(drops))
 
 R.report_and_exit()
