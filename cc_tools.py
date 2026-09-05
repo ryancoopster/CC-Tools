@@ -2762,14 +2762,18 @@ def device_local_sockets(device):
     return sockets
 
 
-def circuit_endpoints(circuit):
-    """(source, destination) as dicts, or None where genuinely unconnected.
+def circuit_endpoints(circuit, device_ids=None):
+    """(source, destination) for one circuit, or None where truly unconnected.
 
     CC_GetCircuitSource / CC_GetCircuitDest hand back four handles:
     (device, device socket, adapter, terminal socket). The adapter slot matters
     -- a circuit landing on an adapter rather than straight onto a device would
-    otherwise read as unconnected, and be silently dropped from a reference set
-    that is supposed to be ground truth.
+    otherwise read as unconnected.
+
+    An UNNAMED device is still a device. ConnectCAD parks unnamed devices at
+    '<DEVICE>', and a drawing can be more than half of them, so judging
+    connectivity by whether a name came back reports real wiring as dangling.
+    Presence of the handle decides connected-ness; the name is just a label.
 
     Reads the stored association, not the cached Src_*/Dst_* fields, which are
     derived output and go stale between resets."""
@@ -2787,12 +2791,25 @@ def circuit_endpoints(circuit):
         adapter = result[2] if len(result) > 2 else None
         end_socket = result[3] if len(result) > 3 else None
 
-        # Prefer the device's own socket; fall back to the terminal one, which
-        # is what a plain unadapted connection reports.
+        if not (device or dev_socket or adapter or end_socket):
+            return None               # nothing on this end at all
+
         socket = dev_socket or end_socket
-        out = {}
+        out = {'connected': True}
+
         if device:
-            out['device'] = name_of(device, DEVICE_NAME_FIELDS)
+            name = name_of(device, DEVICE_NAME_FIELDS)
+            # Resolve through the same id the device list uses, so an unnamed
+            # device is still referable rather than an empty string.
+            if device_ids is not None and device in device_ids:
+                out['device'] = device_ids[device]
+            else:
+                out['device'] = name
+            if is_unnamed(name):
+                out['device_unnamed'] = True
+        else:
+            out['device'] = None
+
         if socket:
             out['socket'] = name_of(socket, SOCKET_NAME_FIELDS)
             out['signal'] = read_field(socket, 'signal')
@@ -2800,7 +2817,7 @@ def circuit_endpoints(circuit):
             out['adapter'] = name_of(adapter, DEVICE_NAME_FIELDS) or '(unnamed)'
             if end_socket and end_socket is not socket:
                 out['adapter_socket'] = name_of(end_socket, SOCKET_NAME_FIELDS)
-        return out or None
+        return out
 
     def call(routine_name):
         routine = cc_routine(routine_name)
@@ -2821,61 +2838,75 @@ def circuit_endpoints(circuit):
 
 
 def build_reference(handles):
-    """The drawing as structured data: devices, their sockets, and the wiring."""
+    """The drawing as structured data: devices, their sockets, and the wiring.
+
+    Devices are collected first so every circuit endpoint can be resolved to an
+    id, including unnamed ones -- otherwise circuits would reference objects
+    missing from the file."""
     devices = []
+    device_ids = {}
     circuits = []
     half_wired = []
     unwired = 0
+    unnamed_count = 0
 
     for h in handles:
-        kind = classify(h)
+        if classify(h) != 'device':
+            continue
+        name_field = resolve_field(h, DEVICE_NAME_FIELDS)
+        tag_field = resolve_field(h, DEVICE_TAG_FIELDS)
+        name = read_field(h, name_field) if name_field else ''
 
-        if kind == 'device':
-            name_field = resolve_field(h, DEVICE_NAME_FIELDS)
-            tag_field = resolve_field(h, DEVICE_TAG_FIELDS)
-            name = read_field(h, name_field) if name_field else ''
-            if is_unnamed(name):
-                continue          # placeholders teach nothing
-            devices.append({
-                'name': name,
-                'tag': read_field(h, tag_field) if tag_field else '',
-                'make': read_field(h, 'make'),
-                'model': read_field(h, 'model'),
-                'type': read_field(h, 'type'),
-                'room': read_field(h, 'loc_room'),
-                'rack': read_field(h, 'loc_rack'),
-                'rack_u': read_field(h, 'loc_rackU'),
-                'layer': layer_name(h),
-                'sockets': device_local_sockets(h),
-            })
+        if is_unnamed(name):
+            unnamed_count += 1
+            identifier = '<unnamed {}>'.format(unnamed_count)
+        else:
+            identifier = name
+        device_ids[h] = identifier
 
-        elif kind == 'circuit':
-            source, destination = circuit_endpoints(h)
-            if source is None and destination is None:
-                unwired += 1
-                continue
-            if not (source or {}).get('device') or not (destination or {}).get('device'):
-                half_wired.append({
-                    'signal': read_field(h, 'Signal'),
-                    'from': source, 'to': destination,
-                })
-            circuits.append({
-                'signal': read_field(h, 'Signal'),
-                'label': read_field(h, 'Label'),
-                'number': read_field(h, 'Number'),
-                'from': source,
-                'to': destination,
-            })
+        devices.append({
+            'id': identifier,
+            'name': name,
+            'unnamed': is_unnamed(name),
+            'tag': read_field(h, tag_field) if tag_field else '',
+            'make': read_field(h, 'make'),
+            'model': read_field(h, 'model'),
+            'type': read_field(h, 'type'),
+            'room': read_field(h, 'loc_room'),
+            'rack': read_field(h, 'loc_rack'),
+            'rack_u': read_field(h, 'loc_rackU'),
+            'layer': layer_name(h),
+            'sockets': device_local_sockets(h),
+        })
+
+    for h in handles:
+        if classify(h) != 'circuit':
+            continue
+        source, destination = circuit_endpoints(h, device_ids)
+        if source is None and destination is None:
+            unwired += 1
+            continue
+        record = {
+            'signal': read_field(h, 'Signal'),
+            'label': read_field(h, 'Label'),
+            'number': read_field(h, 'Number'),
+            'from': source,
+            'to': destination,
+        }
+        circuits.append(record)
+        # Only a MISSING end counts as half wired. A device with no name is
+        # still a device.
+        if source is None or destination is None:
+            half_wired.append(record)
 
     return {
         'file': vs.GetFName(),
         'exported': time.strftime('%Y-%m-%d %H:%M:%S'),
         'devices': devices,
+        'unnamed_devices': unnamed_count,
         'circuits': circuits,
         'unwired_circuits': unwired,
-        # One end connected, the other not. Left in `circuits` as well, but
-        # collected here because a half-wired circuit is usually a drawing
-        # error worth looking at rather than a fact about the design.
+        # One end genuinely absent -- not merely attached to something unnamed.
         'half_wired_circuits': half_wired,
     }
 

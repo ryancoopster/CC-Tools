@@ -83,9 +83,14 @@ blank = device('<DEVICE>', '', '')
 m4, vs4 = load(Doc([[blank, spk]]))
 vs4.GetCustomObjectProfileGroup = lambda h: h
 ref4 = m4.build_reference([blank, spk])
-check('T4 unnamed device excluded',
-      all(d['name'] != '<DEVICE>' for d in ref4['devices']),
-      repr([d['name'] for d in ref4['devices']]))
+check('T4 unnamed device INCLUDED, with an id',
+      len(ref4['devices']) == 2, repr([d['id'] for d in ref4['devices']]))
+unnamed_dev = [d for d in ref4['devices'] if d['unnamed']]
+check('T4 flagged as unnamed', len(unnamed_dev) == 1, repr(unnamed_dev))
+check('T4 given a referable id',
+      unnamed_dev and unnamed_dev[0]['id'] == '<unnamed 1>',
+      repr(unnamed_dev))
+check('T4 counted', ref4['unnamed_devices'] == 1, repr(ref4['unnamed_devices']))
 
 # ── T5: missing ConnectCAD routines degrade, never crash ────────────────────
 m5, vs5 = load(Doc([[spk, c1]]))
@@ -164,5 +169,48 @@ vs10.CC_GetCircuitSource = one_arg_only
 vs10.CC_GetCircuitDest = one_arg_only
 m10.build_reference([spk, c9])
 check('T10 one-argument form used', calls and calls[0] == 'one', repr(calls))
+
+
+# ── T11: a circuit wired to an UNNAMED device is wired, not dangling ────────
+# ConnectCAD parks unnamed devices at '<DEVICE>' -- one real drawing is half
+# of them. Judging connectivity by whether a name came back reports real
+# wiring as dangling, and points circuits at objects missing from the export.
+nameless = Obj('Device', {'name': '<DEVICE>', 'tag': '', 'make': '', 'model': '',
+                          'type': '', 'loc_room': '', 'loc_rack': '',
+                          'loc_rackU': ''},
+               children=[sock('Power In', 'IN', 'PWR', '---')])
+c11 = circ('PWR')
+m11, vs11 = load(Doc([[spk, nameless, c11]]))
+vs11.GetCustomObjectProfileGroup = lambda h: h
+vs11.CC_GetCircuitSource = lambda c: (nameless, nameless.children[0], None,
+                                      nameless.children[0])
+vs11.CC_GetCircuitDest = lambda c: (spk, spk.children[0], None, spk.children[0])
+ref11 = m11.build_reference([spk, nameless, c11])
+
+check('T11 not reported as half wired', ref11['half_wired_circuits'] == [],
+      repr(ref11['half_wired_circuits']))
+wire11 = ref11['circuits'][0]
+check('T11 source marked connected', wire11['from'].get('connected') is True,
+      repr(wire11['from']))
+check('T11 source flagged as unnamed',
+      wire11['from'].get('device_unnamed') is True, repr(wire11['from']))
+check('T11 socket still read', wire11['from'].get('socket') == 'Power In',
+      repr(wire11['from']))
+check('T11 endpoint resolves to a device in the export',
+      wire11['from']['device'] in [d['id'] for d in ref11['devices']],
+      '%r not in %r' % (wire11['from'].get('device'),
+                        [d['id'] for d in ref11['devices']]))
+
+# ── T12: a genuinely absent end is still caught ─────────────────────────────
+c12 = circ('PWR')
+m12, vs12 = load(Doc([[spk, c12]]))
+vs12.GetCustomObjectProfileGroup = lambda h: h
+vs12.CC_GetCircuitSource = lambda c: (None, None, None, None)
+vs12.CC_GetCircuitDest = lambda c: (spk, spk.children[0], None, spk.children[0])
+ref12 = m12.build_reference([spk, c12])
+check('T12 truly absent end still flagged',
+      len(ref12['half_wired_circuits']) == 1, repr(ref12['half_wired_circuits']))
+check('T12 and its source is None, not an empty name',
+      ref12['circuits'][0]['from'] is None, repr(ref12['circuits'][0]))
 
 R.report_and_exit()
