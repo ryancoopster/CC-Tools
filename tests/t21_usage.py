@@ -82,27 +82,38 @@ calls, total = m.usage_totals()
 check('T3 running total across calls', calls == 2 and abs(total - cost * 2) < 1e-4,
       'calls=%d total=%r' % (calls, total))
 
-# ── T4: config handling never leaks the key ─────────────────────────────────
+# ── T4: first run prompts for a key instead of demanding a file edit ────────
 cfg_path = m.claude_config_path()
 if os.path.exists(cfg_path):
     os.remove(cfg_path)
-config, error = m.load_claude_config()
-check('T4 missing config is an error, not a crash', config is None and error)
-check('T4 template created for the user to fill in', os.path.exists(cfg_path))
-check('T4 message explains subscription does not cover it',
-      'subscription' in error.lower(), repr(error))
 
-with open(cfg_path, encoding='utf-8') as f:
-    template = json.load(f)
-check('T4 template ships an EMPTY key', template['api_key'] == '', repr(template))
-
+typed = {'api_key': 'sk-ant-TYPED-BY-THE-USER', 'model': 'claude-sonnet-5'}
+m.ask_for_api_key = lambda existing=None: dict(typed)
 config, error = m.load_claude_config()
-check('T4 blank key rejected with guidance', config is None and 'api_key' in error)
+check('T4 first run asks, then succeeds', error is None and config, repr(error))
+check('T4 uses what was typed', config['api_key'] == typed['api_key'])
+check('T4 model choice honoured', config['model'] == 'claude-sonnet-5',
+      repr(config.get('model')))
+check('T4 saved for next time', os.path.exists(cfg_path))
+
+mode = oct(os.stat(cfg_path).st_mode)[-3:]
+check('T4 saved readable only by this account', mode == '600', mode)
+
+again, error2 = m.load_claude_config(prompt_if_missing=False)
+check('T4 second run does not prompt', error2 is None and again['api_key'] == typed['api_key'])
+
+# Declining the dialog must send nothing, and explain the billing.
+os.remove(cfg_path)
+m.ask_for_api_key = lambda existing=None: None
+config3, error3 = m.load_claude_config()
+check('T5 cancelling sends nothing', config3 is None and error3)
+check('T5 explains subscription does not cover it',
+      'subscription' in (error3 or '').lower(), repr(error3))
+check('T5 nothing written when cancelled', not os.path.exists(cfg_path))
 
 SECRET = 'sk-ant-THIS-MUST-NEVER-APPEAR'
-with open(cfg_path, 'w', encoding='utf-8') as f:
-    json.dump({'api_key': SECRET, 'model': 'claude-opus-5'}, f)
-config, error = m.load_claude_config()
+m.save_claude_config({'api_key': SECRET, 'model': 'claude-opus-5'})
+config, error = m.load_claude_config(prompt_if_missing=False)
 check('T5 valid config loads', error is None and config['api_key'] == SECRET)
 
 m.log_claude_usage(config['model'], 'with key present', usage, cost, 'note')
@@ -110,7 +121,10 @@ leaked = []
 for name in os.listdir(SANDBOX):
     if name == m.CLAUDE_CONFIG_FILE:
         continue                     # the key legitimately lives here
-    with open(os.path.join(SANDBOX, name), encoding='utf-8', errors='ignore') as f:
+    full = os.path.join(SANDBOX, name)
+    if not os.path.isfile(full):
+        continue
+    with open(full, encoding='utf-8', errors='ignore') as f:
         if SECRET in f.read():
             leaked.append(name)
 check('T5 key never written to any log or report', not leaked, repr(leaked))
@@ -122,6 +136,45 @@ reply, u, c, err = m.claude_request(
 check('T6 unreachable endpoint returns an error, not an exception',
       reply is None and err, repr(err))
 check('T6 error text does not contain the key', SECRET not in (err or ''), repr(err))
+
+# ── T8: the local tools work with no key at all ─────────────────────────────
+# Nothing offline should consult, create, or prompt for credentials.
+if os.path.exists(cfg_path):
+    os.remove(cfg_path)
+
+m8, vs8 = load()
+prompted = {'yes': False}
+
+
+def must_not_prompt(existing=None):
+    prompted['yes'] = True
+    return None
+
+
+m8.ask_for_api_key = must_not_prompt
+m8.ask_which_tools = lambda: [m8.TOOL_NORMALISE, m8.TOOL_MATCH, m8.TOOL_SPELL]
+m8.ask_normalise_options = lambda: {
+    'scope': m8.SCOPE_DOCUMENT, 'upper': True, 'trim': True, 'devices': True,
+    'equipment': False, 'sockets': False, 'sync': True, 'preview': False}
+m8.ask_match_options = lambda: {
+    'scope': m8.SCOPE_DOCUMENT, 'devices': True, 'sockets': False,
+    'action': m8.ACTION_EXPORT, 'include_empty': True}
+m8.ask_spell_options = lambda: {
+    'scope': m8.SCOPE_DOCUMENT, 'action': m8.ACTION_SPELL_EXPORT,
+    'preview': False}
+m8.run_cc_tools()
+
+check('T8 offline tools never prompt for a key', not prompted['yes'])
+check('T8 offline tools create no credential file', not os.path.exists(cfg_path))
+check('T8 offline tools still did their work', len(vs8.alerts) >= 1, repr(vs8.alerts))
+
+# And the dialog itself offers declining as a real answer.
+src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        'cc_tools.py'), encoding='utf-8').read()
+check('T8 key dialog offers a local-only choice',
+      'Skip - use local tools only' in src)
+check('T8 key dialog says the other tools need no key',
+      'work offline without one' in src)
 
 # ── T7: formatting is readable ──────────────────────────────────────────────
 line = m.format_usage(usage, cost)

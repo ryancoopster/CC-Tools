@@ -2721,6 +2721,11 @@ def tool_spellcheck():
 # EVERY call is logged to claude_usage.csv with its real token counts and
 # computed cost. Estimates made before a run are guesses; this records what was
 # actually billed.
+#
+# A key is OPTIONAL. Nothing here is consulted unless a Claude-powered feature
+# is chosen, and the four local tools never touch it -- so the plug-in installs
+# and runs fully offline. There is no shared key: each person who installs
+# this supplies their own, which is why one must never reach the repository.
 
 CLAUDE_CONFIG_FILE = 'claude_config.json'
 CLAUDE_USAGE_FILE = 'claude_usage.csv'
@@ -2752,43 +2757,116 @@ def claude_config_path():
     return os.path.join(BASE_FOLDER, CLAUDE_CONFIG_FILE)
 
 
-def write_claude_config_template():
-    """Create an empty settings file for the user to paste their own key into.
+def ask_for_api_key(existing=None):
+    """First-run prompt for the user's own API key. Returns a config, or None.
 
-    The template carries no secret. The key itself is only ever typed by the
-    user into this file -- the plug-in reads it, sends it to Anthropic, and
-    never writes it to a report, a log or an error message."""
+    Each person who installs this supplies their own key -- there is no shared
+    one to distribute, and the repository must never contain one. The key is
+    typed here, written to a file only this account can read, and never
+    surfaced in a report, a log or an error message.
+
+    Note the field shows the key as typed; Vectorworks' layout dialogs have no
+    documented password-style entry."""
+    entered = {}
+    dlg = vs.CreateLayout('Claude API Key', False, 'Save',
+                          'Skip - use local tools only')
+
+    vs.CreateStaticText(
+        dlg, cWhyTxt,
+        'Only the Claude-powered features need a key. Dump Fields, Normalise\n'
+        'Names, Match Names and Spell Check all work offline without one.\n\n'
+        'The Claude API is billed SEPARATELY from a Claude subscription.\n'
+        'Create a key at console.anthropic.com and add credit to it. Your\n'
+        'key is stored on this machine only, readable only by you.', -1)
+    vs.CreateStaticText(dlg, cKeyLbl, 'API key:', -1)
+    vs.CreateEditText(dlg, cKeyField, existing or '', 52)
+    vs.CreateStaticText(dlg, cModelLbl, 'Model:', -1)
+    vs.CreatePullDownMenu(dlg, cModelPopup, 44)
+    vs.CreateStaticText(
+        dlg, cCostTxt,
+        'Every call is logged with its real token counts and cost to\n'
+        'claude_usage.csv in the CC Tools folder.', -1)
+
+    vs.SetFirstLayoutItem(dlg, cWhyTxt)
+    vs.SetBelowItem(dlg, cWhyTxt, cKeyLbl, 0, 8)
+    vs.SetBelowItem(dlg, cKeyLbl, cKeyField, 0, 0)
+    vs.SetBelowItem(dlg, cKeyField, cModelLbl, 0, 8)
+    vs.SetBelowItem(dlg, cModelLbl, cModelPopup, 0, 0)
+    vs.SetBelowItem(dlg, cModelPopup, cCostTxt, 0, 8)
+
+    def handler(item, data):
+        if item == kSetup:
+            for index, (_model_id, label) in enumerate(CLAUDE_MODEL_CHOICES):
+                vs.AddChoice(dlg, cModelPopup, label, index)
+            vs.SelectChoice(dlg, cModelPopup, 0, True)
+        elif item == kOK:
+            entered['api_key'] = (vs.GetItemText(dlg, cKeyField) or '').strip()
+            index = vs.GetSelectedChoiceIndex(dlg, cModelPopup, 0)
+            if index < 0 or index >= len(CLAUDE_MODEL_CHOICES):
+                index = 0
+            entered['model'] = CLAUDE_MODEL_CHOICES[index][0]
+
+    if vs.RunLayoutDialog(dlg, handler) != kOK:
+        return None
+    if not entered.get('api_key'):
+        return None
+    entered['max_tokens'] = 16000
+    return entered
+
+
+def save_claude_config(config):
+    """Write settings so only this account can read them.
+
+    A plain file in Documents is not a secret store, but 0600 at least keeps it
+    out of reach of other accounts on the machine. Anything stronger (Keychain)
+    would mean shelling out, which is not something this plug-in should do."""
     import json
+    import stat
     os.makedirs(BASE_FOLDER, exist_ok=True)
     path = claude_config_path()
-    if os.path.exists(path):
-        return path, False
     with open(path, 'w', encoding='utf-8') as f:
-        json.dump(CLAUDE_CONFIG_TEMPLATE, f, indent=2)
-    return path, True
+        json.dump({'_comment': CLAUDE_CONFIG_TEMPLATE['_comment'],
+                   'api_key': config['api_key'],
+                   'model': config.get('model', CLAUDE_DEFAULT_MODEL),
+                   'max_tokens': config.get('max_tokens', 16000)}, f, indent=2)
+    try:
+        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+    except Exception:
+        pass          # best effort; the file is still written
+    return path
 
 
-def load_claude_config():
-    """Return (config, error). Never logs or reports the key itself."""
+def load_claude_config(prompt_if_missing=True):
+    """Return (config, error), asking for a key on first run.
+
+    Never logs or reports the key itself."""
     import json
     path = claude_config_path()
+    config = {}
     try:
         with open(path, 'r', encoding='utf-8') as f:
             config = json.load(f)
     except FileNotFoundError:
-        created, was_new = write_claude_config_template()
-        return None, ('No Claude settings found, so a blank one was created:\n{}'
-                      '\n\nPaste your API key into it and run this again.\n\n'
-                      'Note: API usage is billed separately from a Claude '
-                      'subscription. Create a key at console.anthropic.com.'
-                      .format(created))
+        config = {}
     except Exception as err:
         return None, 'Could not read {}: {}'.format(CLAUDE_CONFIG_FILE, err)
 
     key = (config.get('api_key') or '').strip()
     if not key:
-        return None, ('No API key in {}.\n\nPaste your key into the "api_key" '
-                      'field and run this again.'.format(claude_config_path()))
+        if not prompt_if_missing:
+            return None, 'No Claude API key configured.'
+        entered = ask_for_api_key()
+        if not entered:
+            return None, ('No API key, so nothing was sent.\n\n'
+                          'The other tools -- Dump Fields, Normalise Names,'
+                          ' Match Names and Spell Check -- work without one.\n\n'
+                          'API access is billed separately from a Claude '
+                          'subscription -- create a key at '
+                          'console.anthropic.com.')
+        save_claude_config(entered)
+        config = entered
+        key = entered['api_key']
+
     config['api_key'] = key
     config.setdefault('model', CLAUDE_DEFAULT_MODEL)
     config.setdefault('max_tokens', 16000)
