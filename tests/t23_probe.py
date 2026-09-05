@@ -176,4 +176,45 @@ check('T9 device bounds reported', 'device bounds' in (log or ''), (log or '')[:
 check('T9 socket position reported relative to the device',
       'device-relative' in (log or ''), (log or '')[:400])
 
+
+# ── T10: sockets are placed from MEASURED bounds, not requested size ────────
+# ConnectCAD sizes the device itself: a 2.0 x 1.0 request came back 3.0 x 1.4
+# in a real document, so anything derived from the requested width misses.
+m10, vs10 = load(Doc([[dev('x')]]))
+moved = []
+vs10.HMove = lambda h, dx, dy: moved.append((round(dx, 4), round(dy, 4)))
+
+# GetBBox reports top before bottom; bounds() must normalise that.
+vs10.GetBBox = lambda h: (-0.195, 0.142, 0.062, -0.063)
+socket = Obj('Socket', {})
+device_box = (-1.5, 0.0, 1.5, 1.4)          # left, bottom, right, top
+
+check('T10 bounds normalises top/bottom order',
+      m10.bounds(socket) == (-0.195, -0.063, 0.062, 0.142), repr(m10.bounds(socket)))
+
+m10.place_socket(socket, device_box, 1, 0.75)
+# socket centre is (-0.0665, 0.0395); target is the right edge at 75% height
+check('T10 right socket lands on the right edge',
+      moved and abs(moved[-1][0] - (1.5 - -0.0665)) < 0.001, repr(moved))
+check('T10 and at the requested height fraction',
+      moved and abs(moved[-1][1] - (1.05 - 0.0395)) < 0.001, repr(moved))
+
+moved[:] = []
+m10.place_socket(socket, device_box, -1, 0.75)
+check('T10 left socket lands on the left edge',
+      moved and abs(moved[-1][0] - (-1.5 - -0.0665)) < 0.001, repr(moved))
+
+moved[:] = []
+check('T10 missing bounds is refused, not guessed',
+      m10.place_socket(socket, None, 1, 0.5) is False and moved == [])
+
+# ── T11: the stray-rectangle warning is gone ────────────────────────────────
+# It counted every rectangle in the document, so a real drawing's own
+# rectangles were reported as leftovers from the probe.
+import os
+src_text = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                             'cc_tools.py'), encoding='utf-8').read()
+check('T11 no document-wide loose-rectangle count',
+      'loose rectangle(s) remain' not in src_text)
+
 R.report_and_exit()

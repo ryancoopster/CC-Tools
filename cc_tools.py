@@ -3138,12 +3138,11 @@ def probe_make_device(name, x, y, width, height, socket_specs, log):
         if not socket:
             log.append('  FAIL  duplicate returned nothing')
             continue
-        # Device-local coordinates, origin at the bottom centre of the source
-        # rectangle. `side` is -1 for the left edge, +1 for the right.
-        try:
-            vs.HMove(socket, side * (width / 2.0), offset)
-        except Exception:
-            pass
+        # ConnectCAD sizes the device itself and ignores the rectangle's
+        # dimensions -- a 2.0 x 1.0 request came back 3.0 x 1.4 -- so the
+        # socket is moved onto the device's MEASURED edge. Anything derived
+        # from the requested width lands in the wrong place.
+        place_socket(socket, bounds(device), side, offset)
         write_field(socket, 'name', socket_name)
         write_field(socket, 'tag', socket_name)
         write_field(socket, 'type', socket_type)
@@ -3167,8 +3166,32 @@ def probe_make_device(name, x, y, width, height, socket_specs, log):
     return device, made == len(socket_specs)
 
 
+def place_socket(socket, device_box, side, height_fraction):
+    """Move a socket onto the device's edge, from measured geometry.
+
+    `side` is -1 for the left edge, +1 for the right; `height_fraction` is 0 at
+    the device's bottom and 1 at its top. Both are resolved against the device's
+    actual bounds, so this holds whatever size ConnectCAD decided on."""
+    socket_box = bounds(socket)
+    if not socket_box or not device_box:
+        return False
+    left, bottom, right, top = device_box
+    centre_x = (socket_box[0] + socket_box[2]) / 2.0
+    centre_y = (socket_box[1] + socket_box[3]) / 2.0
+    target_x = right if side > 0 else left
+    target_y = bottom + (top - bottom) * height_fraction
+    try:
+        vs.HMove(socket, target_x - centre_x, target_y - centre_y)
+        return True
+    except Exception:
+        return False
+
+
 def bounds(handle):
-    """(x1, y1, x2, y2) for an object, or None. GetBBox's shape varies."""
+    """(left, bottom, right, top) for an object, or None.
+
+    GetBBox reports top before bottom and its tuple shape varies by build, so
+    it is flattened and ordered here rather than at every call site."""
     try:
         raw = vs.GetBBox(handle)
     except Exception:
@@ -3182,9 +3205,10 @@ def bounds(handle):
     if len(flat) < 4:
         return None
     try:
-        return tuple(float(v) for v in flat[:4])
+        x1, y1, x2, y2 = (float(v) for v in flat[:4])
     except (TypeError, ValueError):
         return None
+    return (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
 
 
 def measure(device, group, log_prefix='  '):
@@ -3273,13 +3297,13 @@ def tool_creation_probe():
     log.append('1. Device with sockets (source)')
     first, first_sockets = probe_make_device(
         PROBE_PREFIX + ' A', 0, 0, 2.0, 1.0,
-        [('skt_R', 'OUT 1', 'OUT', 1, 0.5)], log)
+        [('skt_R', 'OUT 1', 'OUT', 1, 0.75)], log)
     log.append('')
 
     log.append('2. Device with sockets (destination)')
     second, second_sockets = probe_make_device(
         PROBE_PREFIX + ' B', 6.0, 0, 2.0, 1.0,
-        [('skt_L', 'IN 1', 'IN', -1, 0.5)], log)
+        [('skt_L', 'IN 1', 'IN', -1, 0.75)], log)
     log.append('')
 
     log.append('3. Wiring them with ConnectSelected')
@@ -3308,15 +3332,6 @@ def tool_creation_probe():
                    'See the log.'.format(' and '.join(missing)))
     log.append(verdict)
     log.append('')
-    strays = 0
-    for handle in walk_document():
-        try:
-            if vs.GetTypeN(handle) == 3 and classify(handle) is None:
-                strays += 1
-        except Exception:
-            pass
-    if strays:
-        log.append('NOTE: {} loose rectangle(s) remain on this layer.'.format(strays))
     log.append('')
     log.append('Undo now to remove the probe objects.')
 
