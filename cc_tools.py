@@ -3194,7 +3194,20 @@ def probe_make_device(name, x, y, width, height, socket_specs, log,
     except Exception:
         pass
 
+    log.extend(group_inventory(group, log_prefix='  '))
     log.extend(measure(device, group, log_prefix='  ', upi=upi, scale=scale))
+
+    # The header sizes itself to the name; if it outgrows the body they no
+    # longer line up. Report the difference rather than inferring it from a
+    # screenshot.
+    device_box = bounds(device)
+    body = body_bounds(group)
+    if device_box and body:
+        header_width = device_box[2] - device_box[0]
+        body_width = body[2] - body[0]
+        log.append('  info  widths       device {:.3f}  body {:.3f}  '
+                   'difference {:+.3f}'.format(header_width, body_width,
+                                               header_width - body_width))
     return device, made == len(socket_specs)
 
 
@@ -3258,6 +3271,37 @@ def socket_drop(index, upi, scale=1.0):
     The convention is in printed inches, so the layer scale is applied: at 1:2
     a quarter-inch gap on paper is half a unit in the drawing."""
     return (SOCKET_FIRST_DROP_IN + index * SOCKET_PITCH_IN) * upi * scale
+
+
+def group_inventory(group, log_prefix='  '):
+    """Every object in the profile group, with its record and bounds.
+
+    The header and the body are both drawn by ConnectCAD and only one of them
+    is the rectangle handed in, so which is which has to be read rather than
+    assumed."""
+    out = []
+    if not group:
+        return ['{}info  no profile group'.format(log_prefix)]
+    handle = vs.FInGroup(group)
+    guard = 0
+    while handle and guard < 200:
+        guard += 1
+        record = get_pio_name(handle) or ''
+        try:
+            type_n = vs.GetTypeN(handle)
+        except Exception:
+            type_n = -1
+        box = bounds(handle)
+        if box:
+            out.append('{}info  in group: type {:<3} {:<14} x {:.3f}..{:.3f}  '
+                       'y {:.3f}..{:.3f}  (w {:.3f})'.format(
+                           log_prefix, type_n, record or '-', box[0], box[2],
+                           box[1], box[3], box[2] - box[0]))
+        else:
+            out.append('{}info  in group: type {:<3} {:<14} (no bounds)'.format(
+                log_prefix, type_n, record or '-'))
+        handle = vs.NextObj(handle)
+    return out
 
 
 def body_bounds(group):
@@ -3488,7 +3532,7 @@ def tool_creation_probe():
     _layer, scale, upi = active_layer_context(log)
     log.append('')
 
-    log.append('1. Device with sockets (source)')
+    log.append('1. Device with sockets (SHORT name)')
     first, first_sockets = probe_make_device(
         PROBE_PREFIX + ' A', 0, 0, 2.0, 1.0,
         [('skt_R', 'OUT 1', 'OUT', 1),
@@ -3496,9 +3540,10 @@ def tool_creation_probe():
          ('skt_R', 'OUT 3', 'OUT', 1)], log, upi, scale)
     log.append('')
 
-    log.append('2. Device with sockets (destination)')
+    log.append('2. Device with sockets (LONG name -- does the header outgrow '
+               'the body?)')
     second, second_sockets = probe_make_device(
-        PROBE_PREFIX + ' B', 6.0, 0, 2.0, 1.0,
+        PROBE_PREFIX + ' B WITH A MUCH LONGER NAME', 6.0, 0, 2.0, 1.0,
         [('skt_L', 'IN 1', 'IN', -1),
          ('skt_L', 'IN 2', 'IN', -1),
          ('skt_L', 'IN 3', 'IN', -1)], log, upi, scale)

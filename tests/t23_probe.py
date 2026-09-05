@@ -444,4 +444,40 @@ m18.place_socket(sk18, tall_header, 1, 0, 1.0, 1.0)
 check('T18 header height does not shift the stack',
       abs(moved18[0] - -0.5) < 0.001, repr(moved18))
 
+
+# ── T19: the profile group is inventoried, not assumed ──────────────────────
+# The header and the body are both drawn by ConnectCAD; only one of them is the
+# rectangle handed in, so which is which must be read from the drawing.
+m19, vs19 = load(Doc([[dev('x')]]))
+body19 = Obj('Rect', {})
+skt19 = Obj('Socket', {'name': 'OUT 1', 'tag': 'OUT 1', 'type': 'OUT'})
+group19 = Obj('Group', {}, children=[body19, skt19])
+vs19.GetBBox = lambda h: (-1.5, 0.4, 1.5, -1.0)
+
+lines19 = m19.group_inventory(group19)
+check('T19 every object in the group is listed', len(lines19) == 2, repr(lines19))
+check('T19 records are named', any('Socket' in l for l in lines19), repr(lines19))
+check('T19 widths are reported', all('w ' in l for l in lines19), repr(lines19))
+check('T19 a missing group is stated, not crashed',
+      'no profile group' in m19.group_inventory(None)[0])
+
+# ── T20: the width comparison reaches the log ───────────────────────────────
+m20, vs20 = load(Doc([[dev('x')]]))
+made20, _c = wire_mock(vs20, m20, circuits=[Obj('Circuit', {})])
+vs20.AlertQuestion = lambda *a: 1
+m20.tool_creation_probe()
+
+import os
+log20 = None
+for name in sorted(os.listdir(m20.BASE_FOLDER), reverse=True):
+    if name.startswith('creation_probe'):
+        log20 = open(os.path.join(m20.BASE_FOLDER, name), encoding='utf-8').read()
+        break
+check('T20 header vs body widths compared', 'difference' in (log20 or ''),
+      (log20 or '')[:400])
+check('T20 group contents listed', 'in group:' in (log20 or ''), (log20 or '')[:400])
+check('T20 the long-name experiment is labelled in the log',
+      'LONG name' in (log20 or '') and 'SHORT name' in (log20 or ''),
+      (log20 or '')[:400])
+
 R.report_and_exit()
