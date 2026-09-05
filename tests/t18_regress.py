@@ -126,7 +126,14 @@ check('I match scope = selection', match['scope'] == m10.SCOPE_SELECTION)
 check('I match include-unnamed on', match['include_empty'] is True)
 check('I match action = export', match['action'] == m10.ACTION_EXPORT)
 check('I spell action = in-dialog list', spell['action'] == m10.ACTION_SPELL_LIST)
-check('I launcher = normalise only', picked == [m10.TOOL_NORMALISE], repr(picked))
+check('I launcher starts with nothing ticked', picked == [], repr(picked))
+
+# Nothing ticked must be a clear message, not a silent no-op.
+m11, vs11 = load(Doc([[dev('a')]]))
+m11.ask_which_tools = lambda: []
+m11.run_cc_tools()
+check('I empty selection is explained',
+      any('No tools selected' in a for a in vs11.alerts), repr(vs11.alerts))
 
 # ── J: fuzz - a renamed device always keeps its associated partner ──────────
 NAMES = ['amp1', 'AMP1', 'Amp1', 'cam 2', 'proc', 'PROC', 'spk 1', '',

@@ -6,7 +6,7 @@ ConnectCAD ties most of its objects together **by name string**. Rename a schema
 
 ## What it does
 
-Running **CC Tools** opens a launcher where you tick one or more tools. They always run in the order below.
+Running **CC Tools** opens a launcher where you tick one or more tools. Nothing is ticked by default — these edit a live drawing, so choosing is deliberate. Ticked tools always run in the order below.
 
 | Tool | What it does |
 |---|---|

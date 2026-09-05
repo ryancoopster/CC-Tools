@@ -3342,8 +3342,11 @@ def ask_which_tools():
 
     def handler(item, data):
         if item == kSetup:
+            # Nothing ticked by default. These edit a live drawing, so the
+            # user should have to choose a tool rather than find one already
+            # chosen for them.
             vs.SetBooleanItem(dlg, lDumpChk, False)
-            vs.SetBooleanItem(dlg, lNormChk, True)
+            vs.SetBooleanItem(dlg, lNormChk, False)
             vs.SetBooleanItem(dlg, lMatchChk, False)
             vs.SetBooleanItem(dlg, lSpellChk, False)
             vs.SetBooleanItem(dlg, lRefChk, False)
