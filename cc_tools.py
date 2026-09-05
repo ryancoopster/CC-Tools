@@ -74,6 +74,7 @@ TOOL_NORMALISE = 1
 TOOL_MATCH     = 2
 TOOL_SPELL     = 3
 TOOL_REFERENCE = 4
+TOOL_PROBE     = 5
 
 kOK    = 1
 kSetup = 12255
@@ -3000,6 +3001,252 @@ def tool_export_reference():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# TOOL 6: CREATION PROBE  (writes objects — run on a scratch file)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Everything this plug-in READS has been verified against a real drawing.
+# Everything it would WRITE when generating a schematic is still inference from
+# disassembling the ConnectCAD binary. This runs that write path once, on two
+# throwaway devices, and reports exactly which steps worked.
+#
+# Three unverified claims, in order of how much rests on them:
+#   1. CC_DeviceFromShape turns a rectangle into a bare Device.
+#   2. A Socket PIO duplicated into the device's profile group becomes a real
+#      socket -- there is no socket-creation routine, so this is the only way.
+#   3. Selecting two devices and running ConnectSelected wires horizontally
+#      aligned sockets, since script cannot write the association directly.
+#
+# If 3 fails, a generator cannot wire anything and the whole feature changes
+# shape. Better to learn that from two rectangles than from a finished tool.
+
+TYPE_SYMDEF = 16
+DEFAULTS_FOLDER = 14          # BuildResourceList: Defaults folder
+SOCKET_SYMBOLS = ['skt_R', 'skt_L', 'skt_R_loop', 'skt_L_loop']
+PROBE_PREFIX = 'CCTOOLS PROBE'
+
+
+def import_socket_symbol(name):
+    """Find or import one socket symbol definition. Returns a handle or None.
+
+    ConnectCAD imports these on demand from Libraries/Defaults/ConnectCAD/
+    Socket; from script the import has to be done explicitly."""
+    existing = vs.GetObject(name)
+    if existing and vs.GetTypeN(existing) == TYPE_SYMDEF:
+        return existing
+    try:
+        list_id, count = vs.BuildResourceList(TYPE_SYMDEF, DEFAULTS_FOLDER,
+                                              'ConnectCAD/Socket')
+    except Exception:
+        return None
+    for index in range(1, (count or 0) + 1):
+        try:
+            if vs.GetNameFromResourceList(list_id, index) == name:
+                return vs.ImportResourceToCurrentFile(list_id, index)
+        except Exception:
+            continue
+    return None
+
+
+def socket_prototype(symbol):
+    """The Socket plug-in object inside a socket symbol definition."""
+    handle = vs.FInSymDef(symbol)
+    guard = 0
+    while handle and guard < 50:
+        guard += 1
+        if vs.GetTypeN(handle) == TYPE_PIO:
+            return handle
+        handle = vs.NextObj(handle)
+    return None
+
+
+def probe_make_device(name, x, y, width, height, socket_specs, log):
+    """Create one device with sockets.
+
+    Returns (device handle or None, every socket added). The second value
+    matters: a device that comes back without its sockets is a failure, and
+    reporting it as anything else would defeat the point of a probe."""
+    try:
+        vs.Rect(x - width / 2.0, y + height, x + width / 2.0, y)
+        rect = vs.LNewObj()
+    except Exception as err:
+        log.append('  FAIL  could not draw the rectangle: {}'.format(err))
+        return None, False
+    if not rect:
+        log.append('  FAIL  no rectangle handle came back')
+        return None, False
+
+    maker = cc_routine('CC_DeviceFromShape')
+    if maker is None:
+        log.append('  FAIL  CC_DeviceFromShape is unavailable (ConnectCAD licence?)')
+        return None, False
+    try:
+        device = maker(rect)
+    except Exception as err:
+        log.append('  FAIL  CC_DeviceFromShape raised: {}'.format(err))
+        return None, False
+    if not device:
+        log.append('  FAIL  CC_DeviceFromShape returned nothing')
+        return None, False
+    log.append('  ok    device created from rectangle')
+
+    for field, value in (('name', name), ('tag', name),
+                         ('make', 'CC Tools'), ('model', 'Probe')):
+        write_field(device, field, value)
+    log.append('  ok    name/make/model set')
+
+    group_getter = getattr(vs, 'GetCustomObjectProfileGroup', None)
+    if group_getter is None:
+        log.append('  FAIL  GetCustomObjectProfileGroup is unavailable')
+        return device, False
+    try:
+        group = group_getter(device)
+    except Exception as err:
+        log.append('  FAIL  profile group unreadable: {}'.format(err))
+        return device, False
+    if not group:
+        log.append('  FAIL  device has no profile group')
+        return device, False
+    log.append('  ok    profile group found')
+
+    made = 0
+    for symbol_name, socket_name, socket_type, offset in socket_specs:
+        symbol = import_socket_symbol(symbol_name)
+        if not symbol:
+            log.append('  FAIL  socket symbol {} not found'.format(symbol_name))
+            continue
+        prototype = socket_prototype(symbol)
+        if not prototype:
+            log.append('  FAIL  no Socket object inside {}'.format(symbol_name))
+            continue
+        try:
+            # SetParent cannot move an object into a plug-in container;
+            # CreateDuplicateObject is the documented way in.
+            socket = vs.CreateDuplicateObject(prototype, group)
+        except Exception as err:
+            log.append('  FAIL  duplicating the socket raised: {}'.format(err))
+            continue
+        if not socket:
+            log.append('  FAIL  duplicate returned nothing')
+            continue
+        # Coordinates are device-local, origin at the bottom centre of the
+        # rectangle the device was made from.
+        try:
+            vs.HMove(socket, width / 2.0, offset)
+        except Exception:
+            pass
+        write_field(socket, 'name', socket_name)
+        write_field(socket, 'tag', socket_name)
+        write_field(socket, 'type', socket_type)
+        try:
+            vs.ResetObject(socket)
+        except Exception:
+            pass
+        made += 1
+
+    log.append('  {}    {} of {} socket(s) added'.format(
+        'ok  ' if made == len(socket_specs) else 'PART', made, len(socket_specs)))
+    try:
+        vs.ResetObject(device)
+    except Exception:
+        pass
+    return device, made == len(socket_specs)
+
+
+def probe_connect(first, second, log):
+    """Try ConnectSelected, then verify with the association reader."""
+    command = getattr(vs, 'DoMenuTextByName', None)
+    if command is None:
+        log.append('  FAIL  DoMenuTextByName is unavailable')
+        return False
+    try:
+        vs.DSelectAll()
+        vs.SetSelect(first)
+        vs.SetSelect(second)
+        command('ConnectSelected', 0)
+        log.append('  ok    ConnectSelected ran without error')
+    except Exception as err:
+        log.append('  FAIL  ConnectSelected raised: {}'.format(err))
+        return False
+
+    # A circuit only counts as made if the association reader can see it.
+    found = 0
+    for handle in walk_document():
+        if classify(handle) != 'circuit':
+            continue
+        source, destination = circuit_endpoints(handle)
+        names = []
+        for end in (source, destination):
+            if end and end.get('device'):
+                names.append(str(end['device']))
+        if any(n.startswith(PROBE_PREFIX) for n in names):
+            found += 1
+            log.append('  ok    circuit wired: {}'.format(' -> '.join(names)))
+    if not found:
+        log.append('  FAIL  no circuit connecting the probe devices was found')
+    return found > 0
+
+
+def tool_creation_probe():
+    """Returns (status, summary)."""
+    if vs.AlertQuestion(
+            'Run the creation probe?',
+            'This WRITES two throwaway devices and tries to wire them, to check '
+            'whether generating schematics is possible at all.\n\n'
+            'Run it on a scratch file, not a live drawing. Undo afterwards.',
+            0, 'Run it', 'Cancel', '', '') != 1:
+        return 'cancelled', None
+
+    log = ['CREATION PROBE', '']
+    log.append('Layer: {}'.format(vs.GetLName(vs.ActLayer())))
+    log.append('')
+
+    log.append('1. Device with sockets (source)')
+    first, first_sockets = probe_make_device(
+        PROBE_PREFIX + ' A', 0, 0, 2.0, 1.0,
+        [('skt_R', 'OUT 1', 'OUT', 0.5)], log)
+    log.append('')
+
+    log.append('2. Device with sockets (destination)')
+    second, second_sockets = probe_make_device(
+        PROBE_PREFIX + ' B', 6.0, 0, 2.0, 1.0,
+        [('skt_L', 'IN 1', 'IN', 0.5)], log)
+    log.append('')
+
+    log.append('3. Wiring them with ConnectSelected')
+    wired = False
+    if first and second:
+        wired = probe_connect(first, second, log)
+    else:
+        log.append('  skipped - a device was not created')
+    log.append('')
+
+    # Every step has to have worked. Wiring alone is not enough: a device
+    # that came back without its sockets is a failure however the circuit read.
+    devices_ok = bool(first and second)
+    sockets_ok = first_sockets and second_sockets
+    if devices_ok and sockets_ok and wired:
+        verdict = 'Generation is possible: devices, sockets and wiring all worked.'
+    else:
+        missing = []
+        if not devices_ok:
+            missing.append('devices')
+        if not sockets_ok:
+            missing.append('sockets')
+        if not wired:
+            missing.append('wiring')
+        verdict = ('Generation is NOT possible as designed - {} failed. '
+                   'See the log.'.format(' and '.join(missing)))
+    log.append(verdict)
+    log.append('')
+    log.append('Undo now to remove the probe objects.')
+
+    path = save_text('creation_probe', '\n'.join(report_header('CREATION PROBE')
+                                                 + log))
+    vs.AlrtDialog('{}\n\nFull log:\n{}'.format(verdict, path))
+    return 'done', '{}\n{}'.format(verdict, path)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # CLAUDE API CLIENT
 # ═══════════════════════════════════════════════════════════════════════════
 #
@@ -3338,6 +3585,7 @@ def format_usage(usage, cost):
 lToolLbl = 304
 lDumpChk, lNormChk, lMatchChk, lSpellChk = 305, 306, 307, 310
 lRefChk = 311
+lProbeChk = 312
 lOrderTxt, lHintTxt = 308, 309
 
 
@@ -3354,6 +3602,7 @@ def ask_which_tools():
     vs.CreateCheckBox(dlg, lMatchChk, 'Match Names and Display Tags')
     vs.CreateCheckBox(dlg, lSpellChk, 'Spell Check')
     vs.CreateCheckBox(dlg, lRefChk, 'Export Reference Schematic')
+    vs.CreateCheckBox(dlg, lProbeChk, 'Creation Probe  (writes - scratch file only)')
     vs.CreateStaticText(
         dlg, lOrderTxt,
         'Run in this order. Normalising first resolves case- and space-only\n'
@@ -3368,7 +3617,8 @@ def ask_which_tools():
     vs.SetBelowItem(dlg, lNormChk, lMatchChk, 0, 0)
     vs.SetBelowItem(dlg, lMatchChk, lSpellChk, 0, 0)
     vs.SetBelowItem(dlg, lSpellChk, lRefChk, 0, 0)
-    vs.SetBelowItem(dlg, lRefChk, lOrderTxt, 0, 8)
+    vs.SetBelowItem(dlg, lRefChk, lProbeChk, 0, 0)
+    vs.SetBelowItem(dlg, lProbeChk, lOrderTxt, 0, 8)
     vs.SetBelowItem(dlg, lOrderTxt, lHintTxt, 0, 8)
 
     def handler(item, data):
@@ -3381,6 +3631,7 @@ def ask_which_tools():
             vs.SetBooleanItem(dlg, lMatchChk, False)
             vs.SetBooleanItem(dlg, lSpellChk, False)
             vs.SetBooleanItem(dlg, lRefChk, False)
+            vs.SetBooleanItem(dlg, lProbeChk, False)
         elif item == kOK:
             picked = []
             # Fixed order, independent of which boxes the user ticked first.
@@ -3394,6 +3645,8 @@ def ask_which_tools():
                 picked.append(TOOL_SPELL)
             if vs.GetBooleanItem(dlg, lRefChk):
                 picked.append(TOOL_REFERENCE)
+            if vs.GetBooleanItem(dlg, lProbeChk):
+                picked.append(TOOL_PROBE)
             chosen['tools'] = picked
 
     if vs.RunLayoutDialog(dlg, handler) != kOK:
@@ -3407,6 +3660,7 @@ TOOL_RUNNERS = [
     (TOOL_MATCH, 'Match Names and Tags'),
     (TOOL_SPELL, 'Spell Check'),
     (TOOL_REFERENCE, 'Export Reference Schematic'),
+    (TOOL_PROBE, 'Creation Probe'),
 ]
 
 
@@ -3433,6 +3687,7 @@ def run_cc_tools():
         TOOL_MATCH: tool_match_names_and_tags,
         TOOL_SPELL: tool_spellcheck,
         TOOL_REFERENCE: tool_export_reference,
+        TOOL_PROBE: tool_creation_probe,
     }
     names = dict((tool, name) for tool, name in TOOL_RUNNERS)
 
