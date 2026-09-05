@@ -3089,6 +3089,15 @@ def probe_make_device(name, x, y, width, height, socket_specs, log):
         return None, False
     log.append('  ok    device created from rectangle')
 
+    # CC_DeviceFromShape DUPLICATES the shape into the device's profile group
+    # and leaves the original on the layer. Without this the drawing fills up
+    # with orphan rectangles sitting behind every device.
+    try:
+        vs.DelObject(rect)
+        log.append('  ok    source rectangle removed')
+    except Exception as err:
+        log.append('  WARN  source rectangle left behind: {}'.format(err))
+
     for field, value in (('name', name), ('tag', name),
                          ('make', 'CC Tools'), ('model', 'Probe')):
         write_field(device, field, value)
@@ -3109,7 +3118,8 @@ def probe_make_device(name, x, y, width, height, socket_specs, log):
     log.append('  ok    profile group found')
 
     made = 0
-    for symbol_name, socket_name, socket_type, offset in socket_specs:
+    for spec in socket_specs:
+        symbol_name, socket_name, socket_type, side, offset = spec
         symbol = import_socket_symbol(symbol_name)
         if not symbol:
             log.append('  FAIL  socket symbol {} not found'.format(symbol_name))
@@ -3128,15 +3138,18 @@ def probe_make_device(name, x, y, width, height, socket_specs, log):
         if not socket:
             log.append('  FAIL  duplicate returned nothing')
             continue
-        # Coordinates are device-local, origin at the bottom centre of the
-        # rectangle the device was made from.
+        # Device-local coordinates, origin at the bottom centre of the source
+        # rectangle. `side` is -1 for the left edge, +1 for the right.
         try:
-            vs.HMove(socket, width / 2.0, offset)
+            vs.HMove(socket, side * (width / 2.0), offset)
         except Exception:
             pass
         write_field(socket, 'name', socket_name)
         write_field(socket, 'tag', socket_name)
         write_field(socket, 'type', socket_type)
+        # Without these the socket renders '???' for its signal and connector.
+        write_field(socket, 'signal', 'LAN')
+        write_field(socket, 'connector', 'EC-6A')
         try:
             vs.ResetObject(socket)
         except Exception:
@@ -3149,7 +3162,64 @@ def probe_make_device(name, x, y, width, height, socket_specs, log):
         vs.ResetObject(device)
     except Exception:
         pass
+
+    log.extend(measure(device, group, log_prefix='  '))
     return device, made == len(socket_specs)
+
+
+def bounds(handle):
+    """(x1, y1, x2, y2) for an object, or None. GetBBox's shape varies."""
+    try:
+        raw = vs.GetBBox(handle)
+    except Exception:
+        return None
+    flat = []
+    for part in raw if isinstance(raw, (list, tuple)) else [raw]:
+        if isinstance(part, (list, tuple)):
+            flat.extend(part)
+        else:
+            flat.append(part)
+    if len(flat) < 4:
+        return None
+    try:
+        return tuple(float(v) for v in flat[:4])
+    except (TypeError, ValueError):
+        return None
+
+
+def measure(device, group, log_prefix='  '):
+    """Report where the device and its sockets actually landed.
+
+    Placement is the one thing the disassembly could not settle: the local
+    frame's origin is documented, but where the label symbol sits relative to
+    it is not. Measuring beats another round of guessing from a screenshot."""
+    out = []
+    box = bounds(device)
+    if box:
+        out.append('{}info  device bounds  x {:.3f}..{:.3f}   y {:.3f}..{:.3f}'
+                   .format(log_prefix, box[0], box[2], box[1], box[3]))
+    else:
+        out.append('{}info  device bounds unavailable'.format(log_prefix))
+
+    handle = vs.FInGroup(group) if group else None
+    guard = 0
+    while handle and guard < 50:
+        guard += 1
+        if classify(handle) == 'socket':
+            field = resolve_field(handle, SOCKET_NAME_FIELDS)
+            name = read_field(handle, field) if field else '?'
+            sbox = bounds(handle)
+            if sbox and box:
+                out.append('{}info  socket {:<8} x {:.3f}..{:.3f}  y {:.3f}..{:.3f}'
+                           '   (device-relative x {:+.3f}, y {:+.3f})'.format(
+                               log_prefix, name, sbox[0], sbox[2], sbox[1],
+                               sbox[3], sbox[0] - box[0], sbox[1] - box[1]))
+            elif sbox:
+                out.append('{}info  socket {:<8} x {:.3f}..{:.3f}  y {:.3f}..{:.3f}'
+                           .format(log_prefix, name, sbox[0], sbox[2],
+                                   sbox[1], sbox[3]))
+        handle = vs.NextObj(handle)
+    return out
 
 
 def probe_connect(first, second, log):
@@ -3203,13 +3273,13 @@ def tool_creation_probe():
     log.append('1. Device with sockets (source)')
     first, first_sockets = probe_make_device(
         PROBE_PREFIX + ' A', 0, 0, 2.0, 1.0,
-        [('skt_R', 'OUT 1', 'OUT', 0.5)], log)
+        [('skt_R', 'OUT 1', 'OUT', 1, 0.5)], log)
     log.append('')
 
     log.append('2. Device with sockets (destination)')
     second, second_sockets = probe_make_device(
         PROBE_PREFIX + ' B', 6.0, 0, 2.0, 1.0,
-        [('skt_L', 'IN 1', 'IN', 0.5)], log)
+        [('skt_L', 'IN 1', 'IN', -1, 0.5)], log)
     log.append('')
 
     log.append('3. Wiring them with ConnectSelected')
@@ -3237,6 +3307,16 @@ def tool_creation_probe():
         verdict = ('Generation is NOT possible as designed - {} failed. '
                    'See the log.'.format(' and '.join(missing)))
     log.append(verdict)
+    log.append('')
+    strays = 0
+    for handle in walk_document():
+        try:
+            if vs.GetTypeN(handle) == 3 and classify(handle) is None:
+                strays += 1
+        except Exception:
+            pass
+    if strays:
+        log.append('NOTE: {} loose rectangle(s) remain on this layer.'.format(strays))
     log.append('')
     log.append('Undo now to remove the probe objects.')
 
