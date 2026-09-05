@@ -34,8 +34,8 @@ c1 = circ('LAN', 'HL feed', src_cache='STALE NAME', dst_cache='ALSO STALE')
 
 m, vs = load(Doc([[spk, swt, c1]]))
 vs.GetCustomObjectProfileGroup = lambda h: h          # children are the group
-vs.CC_GetCircuitSource = lambda c, skip: (swt, None, None, swt.children[0])
-vs.CC_GetCircuitDest = lambda c, skip: (spk, None, None, spk.children[0])
+vs.CC_GetCircuitSource = lambda c: (swt, swt.children[0], None, swt.children[0])
+vs.CC_GetCircuitDest = lambda c: (spk, spk.children[0], None, spk.children[0])
 
 ref = m.build_reference([spk, swt, c1])
 
@@ -70,8 +70,8 @@ check('T2 stale cache ignored entirely',
 c2 = circ('LAN', 'dangling')
 m3, vs3 = load(Doc([[spk, c2]]))
 vs3.GetCustomObjectProfileGroup = lambda h: h
-vs3.CC_GetCircuitSource = lambda c, skip: (None, None, None, None)
-vs3.CC_GetCircuitDest = lambda c, skip: (None, None, None, None)
+vs3.CC_GetCircuitSource = lambda c: (None, None, None, None)
+vs3.CC_GetCircuitDest = lambda c: (None, None, None, None)
 ref3 = m3.build_reference([spk, c2])
 check('T3 unwired circuit not exported as a connection', ref3['circuits'] == [],
       repr(ref3['circuits']))
@@ -116,5 +116,53 @@ check('T7 no-device export says wrong layer', 'wrong layer' in (summary or ''),
       repr(summary))
 check('T7 and warns on screen',
       any('location plan' in a for a in vs7.alerts), repr(vs7.alerts))
+
+
+# ── T8: an adapter end is captured, not read as unconnected ─────────────────
+# The four handles are (device, device socket, adapter, terminal socket).
+# Ignoring the adapter slot makes an adapted circuit look dangling.
+adapter = Obj('Device', {'name': 'ADAPTER 1', 'tag': 'ADAPTER 1',
+                         'make': 'Neutrik', 'model': 'NA2FPMF'})
+c8 = circ('PWR')
+m8, vs8 = load(Doc([[swt, spk, adapter, c8]]))
+vs8.GetCustomObjectProfileGroup = lambda h: h
+vs8.CC_GetCircuitSource = lambda c: (swt, swt.children[0], adapter,
+                                     spk.children[0])
+vs8.CC_GetCircuitDest = lambda c: (spk, spk.children[0], None, spk.children[0])
+ref8 = m8.build_reference([swt, spk, adapter, c8])
+wire8 = ref8['circuits'][0]
+check('T8 adapter recorded', wire8['from'].get('adapter') == 'ADAPTER 1',
+      repr(wire8['from']))
+check('T8 device still resolved through the adapter',
+      wire8['from']['device'] == 'SWTCH 4.01 UPPER', repr(wire8['from']))
+check('T8 not counted as unwired', ref8['unwired_circuits'] == 0)
+
+# ── T9: a circuit wired at one end only is surfaced ─────────────────────────
+c9 = circ('PWR')
+m9, vs9 = load(Doc([[spk, c9]]))
+vs9.GetCustomObjectProfileGroup = lambda h: h
+vs9.CC_GetCircuitSource = lambda c: (None, None, None, None)
+vs9.CC_GetCircuitDest = lambda c: (spk, spk.children[0], None, spk.children[0])
+ref9 = m9.build_reference([spk, c9])
+check('T9 half-wired circuit still exported', len(ref9['circuits']) == 1)
+check('T9 and flagged separately', len(ref9['half_wired_circuits']) == 1,
+      repr(ref9['half_wired_circuits']))
+check('T9 not counted as fully unwired', ref9['unwired_circuits'] == 0)
+
+# ── T10: the documented one-arg call is tried first ─────────────────────────
+calls = []
+m10, vs10 = load(Doc([[spk, c9]]))
+vs10.GetCustomObjectProfileGroup = lambda h: h
+
+
+def one_arg_only(c):
+    calls.append('one')
+    return (spk, spk.children[0], None, spk.children[0])
+
+
+vs10.CC_GetCircuitSource = one_arg_only
+vs10.CC_GetCircuitDest = one_arg_only
+m10.build_reference([spk, c9])
+check('T10 one-argument form used', calls and calls[0] == 'one', repr(calls))
 
 R.report_and_exit()

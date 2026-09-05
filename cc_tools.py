@@ -2763,50 +2763,68 @@ def device_local_sockets(device):
 
 
 def circuit_endpoints(circuit):
-    """(source, destination) as {device, socket} pairs, or None where unwired.
+    """(source, destination) as dicts, or None where genuinely unconnected.
 
-    Uses the stored association rather than the cached name fields."""
-    def describe(device, socket):
-        if not device and not socket:
+    CC_GetCircuitSource / CC_GetCircuitDest hand back four handles:
+    (device, device socket, adapter, terminal socket). The adapter slot matters
+    -- a circuit landing on an adapter rather than straight onto a device would
+    otherwise read as unconnected, and be silently dropped from a reference set
+    that is supposed to be ground truth.
+
+    Reads the stored association, not the cached Src_*/Dst_* fields, which are
+    derived output and go stale between resets."""
+    def name_of(handle, candidates):
+        if not handle:
+            return ''
+        field = resolve_field(handle, candidates)
+        return read_field(handle, field) if field else ''
+
+    def describe(result):
+        if not isinstance(result, (list, tuple)) or not result:
             return None
+        device = result[0] if len(result) > 0 else None
+        dev_socket = result[1] if len(result) > 1 else None
+        adapter = result[2] if len(result) > 2 else None
+        end_socket = result[3] if len(result) > 3 else None
+
+        # Prefer the device's own socket; fall back to the terminal one, which
+        # is what a plain unadapted connection reports.
+        socket = dev_socket or end_socket
         out = {}
         if device:
-            field = resolve_field(device, DEVICE_NAME_FIELDS)
-            out['device'] = read_field(device, field) if field else ''
+            out['device'] = name_of(device, DEVICE_NAME_FIELDS)
         if socket:
-            field = resolve_field(socket, SOCKET_NAME_FIELDS)
-            out['socket'] = read_field(socket, field) if field else ''
+            out['socket'] = name_of(socket, SOCKET_NAME_FIELDS)
             out['signal'] = read_field(socket, 'signal')
+        if adapter:
+            out['adapter'] = name_of(adapter, DEVICE_NAME_FIELDS) or '(unnamed)'
+            if end_socket and end_socket is not socket:
+                out['adapter_socket'] = name_of(end_socket, SOCKET_NAME_FIELDS)
         return out or None
 
-    source = destination = None
-    for routine_name, slot in (('CC_GetCircuitSource', 'src'),
-                               ('CC_GetCircuitDest', 'dst')):
+    def call(routine_name):
         routine = cc_routine(routine_name)
         if routine is None:
-            continue
-        try:
-            result = routine(circuit, False)
-        except Exception:
-            continue
-        # Returns (hDevice, hDevSkt, hAdapter, hSocket) in some SDK shapes and
-        # a longer tuple in others; take the first and last usable handles.
-        if not isinstance(result, (list, tuple)) or not result:
-            continue
-        device = result[0] if len(result) > 0 else None
-        socket = result[-1] if len(result) > 1 else None
-        described = describe(device, socket)
-        if slot == 'src':
-            source = described
-        else:
-            destination = described
-    return source, destination
+            return None
+        # The documented shape takes only the circuit; some builds expose a
+        # skip-adapters flag. Try the documented form first.
+        for args in ((circuit,), (circuit, False)):
+            try:
+                return describe(routine(*args))
+            except TypeError:
+                continue
+            except Exception:
+                return None
+        return None
+
+    return call('CC_GetCircuitSource'), call('CC_GetCircuitDest')
 
 
 def build_reference(handles):
     """The drawing as structured data: devices, their sockets, and the wiring."""
     devices = []
     circuits = []
+    half_wired = []
     unwired = 0
 
     for h in handles:
@@ -2836,6 +2854,11 @@ def build_reference(handles):
             if source is None and destination is None:
                 unwired += 1
                 continue
+            if not (source or {}).get('device') or not (destination or {}).get('device'):
+                half_wired.append({
+                    'signal': read_field(h, 'Signal'),
+                    'from': source, 'to': destination,
+                })
             circuits.append({
                 'signal': read_field(h, 'Signal'),
                 'label': read_field(h, 'Label'),
@@ -2850,6 +2873,10 @@ def build_reference(handles):
         'devices': devices,
         'circuits': circuits,
         'unwired_circuits': unwired,
+        # One end connected, the other not. Left in `circuits` as well, but
+        # collected here because a half-wired circuit is usually a drawing
+        # error worth looking at rather than a fact about the design.
+        'half_wired_circuits': half_wired,
     }
 
 
@@ -2930,6 +2957,9 @@ def tool_export_reference():
     if reference['unwired_circuits']:
         note = '\n{} circuit(s) had no stored connection and were skipped.'.format(
             reference['unwired_circuits'])
+    if reference['half_wired_circuits']:
+        note += '\n{} circuit(s) are connected at ONE end only.'.format(
+            len(reference['half_wired_circuits']))
     if not wired and not cc_routine('CC_GetCircuitSource'):
         note += ('\nConnectCAD\'s circuit routines were unavailable, so no '
                  'wiring could be read.')
