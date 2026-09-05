@@ -5,6 +5,7 @@
 #   2. Normalise Names      - UPPERCASE and/or trim names & tags
 #   3. Match Names and Tags - reconcile Name vs Display Tag
 #   4. Spell Check          - fix typos without touching technical vocabulary
+#   5. Export Reference     - the drawing as JSON, for use as a worked example
 #
 # WHY ONE FILE: Vectorworks creates one .vsm per menu command, and there is no
 # multi-command plug-in. Keeping the three tools as separate commands meant
@@ -72,6 +73,7 @@ TOOL_DUMP      = 0
 TOOL_NORMALISE = 1
 TOOL_MATCH     = 2
 TOOL_SPELL     = 3
+TOOL_REFERENCE = 4
 
 kOK    = 1
 kSetup = 12255
@@ -2706,6 +2708,237 @@ def tool_spellcheck():
                              settings)
 
 # ═══════════════════════════════════════════════════════════════════════════
+# TOOL 5: EXPORT REFERENCE SCHEMATIC
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Turns part of an existing drawing into the same JSON shape a generator would
+# have to produce: devices with their sockets, and circuits with their real
+# endpoints. Examples in the exact output format are the most useful thing you
+# can put in front of a model -- far more so than a picture of the finished
+# sheet, and far cheaper than one.
+#
+# Circuit endpoints come from CC_GetCircuitSource / CC_GetCircuitDest, which
+# read ConnectCAD's stored association. The Src_Dev_Name / Dst_Skt_Name fields
+# are derived output refreshed on reset, so a drawing mid-edit can have them
+# stale -- asking the association is the only way to know what is really wired
+# to what.
+#
+# Read-only. Scope it to the schematic layer: a location plan contributes
+# nothing a signal flow needs, and a big drawing set is mostly plans.
+
+REFERENCE_FOLDER = 'reference'
+
+
+def device_local_sockets(device):
+    """The sockets belonging to one device, read from its profile group.
+
+    ConnectCAD keeps a device's sockets in the plug-in object's profile group
+    rather than loose on the layer, which is also where they must be written
+    when creating one."""
+    sockets = []
+    getter = getattr(vs, 'GetCustomObjectProfileGroup', None)
+    if getter is None:
+        return sockets
+    try:
+        group = getter(device)
+    except Exception:
+        return sockets
+    if not group:
+        return sockets
+
+    handle = vs.FInGroup(group)
+    guard = 0
+    while handle and guard < 500:
+        guard += 1
+        if classify(handle) == 'socket':
+            name_field = resolve_field(handle, SOCKET_NAME_FIELDS)
+            sockets.append({
+                'name': read_field(handle, name_field) if name_field else '',
+                'type': read_field(handle, 'type'),
+                'signal': read_field(handle, 'signal'),
+                'connector': read_field(handle, 'connector'),
+            })
+        handle = vs.NextObj(handle)
+    return sockets
+
+
+def circuit_endpoints(circuit):
+    """(source, destination) as {device, socket} pairs, or None where unwired.
+
+    Uses the stored association rather than the cached name fields."""
+    def describe(device, socket):
+        if not device and not socket:
+            return None
+        out = {}
+        if device:
+            field = resolve_field(device, DEVICE_NAME_FIELDS)
+            out['device'] = read_field(device, field) if field else ''
+        if socket:
+            field = resolve_field(socket, SOCKET_NAME_FIELDS)
+            out['socket'] = read_field(socket, field) if field else ''
+            out['signal'] = read_field(socket, 'signal')
+        return out or None
+
+    source = destination = None
+    for routine_name, slot in (('CC_GetCircuitSource', 'src'),
+                               ('CC_GetCircuitDest', 'dst')):
+        routine = cc_routine(routine_name)
+        if routine is None:
+            continue
+        try:
+            result = routine(circuit, False)
+        except Exception:
+            continue
+        # Returns (hDevice, hDevSkt, hAdapter, hSocket) in some SDK shapes and
+        # a longer tuple in others; take the first and last usable handles.
+        if not isinstance(result, (list, tuple)) or not result:
+            continue
+        device = result[0] if len(result) > 0 else None
+        socket = result[-1] if len(result) > 1 else None
+        described = describe(device, socket)
+        if slot == 'src':
+            source = described
+        else:
+            destination = described
+    return source, destination
+
+
+def build_reference(handles):
+    """The drawing as structured data: devices, their sockets, and the wiring."""
+    devices = []
+    circuits = []
+    unwired = 0
+
+    for h in handles:
+        kind = classify(h)
+
+        if kind == 'device':
+            name_field = resolve_field(h, DEVICE_NAME_FIELDS)
+            tag_field = resolve_field(h, DEVICE_TAG_FIELDS)
+            name = read_field(h, name_field) if name_field else ''
+            if is_unnamed(name):
+                continue          # placeholders teach nothing
+            devices.append({
+                'name': name,
+                'tag': read_field(h, tag_field) if tag_field else '',
+                'make': read_field(h, 'make'),
+                'model': read_field(h, 'model'),
+                'type': read_field(h, 'type'),
+                'room': read_field(h, 'loc_room'),
+                'rack': read_field(h, 'loc_rack'),
+                'rack_u': read_field(h, 'loc_rackU'),
+                'layer': layer_name(h),
+                'sockets': device_local_sockets(h),
+            })
+
+        elif kind == 'circuit':
+            source, destination = circuit_endpoints(h)
+            if source is None and destination is None:
+                unwired += 1
+                continue
+            circuits.append({
+                'signal': read_field(h, 'Signal'),
+                'label': read_field(h, 'Label'),
+                'number': read_field(h, 'Number'),
+                'from': source,
+                'to': destination,
+            })
+
+    return {
+        'file': vs.GetFName(),
+        'exported': time.strftime('%Y-%m-%d %H:%M:%S'),
+        'devices': devices,
+        'circuits': circuits,
+        'unwired_circuits': unwired,
+    }
+
+
+def save_reference(reference, label):
+    """Write to reference/<label>.json, alongside the other CC Tools output."""
+    import json
+    folder = os.path.join(BASE_FOLDER, REFERENCE_FOLDER)
+    os.makedirs(folder, exist_ok=True)
+    safe = ''.join(ch if (ch.isalnum() or ch in ' -_') else '_' for ch in label)
+    path = os.path.join(folder, '{}_{}.json'.format(
+        safe.strip() or 'reference', time.strftime('%Y%m%d_%H%M%S')))
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(reference, f, indent=2)
+    return path
+
+
+rScopeLbl, rScopePopup, rNoteTxt = 704, 705, 706
+
+
+def ask_reference_options():
+    settings = {}
+    dlg = vs.CreateLayout('Export Reference Schematic', False, 'Export', 'Cancel')
+
+    vs.CreateStaticText(dlg, rScopeLbl, 'Export from:', -1)
+    vs.CreatePullDownMenu(dlg, rScopePopup, 26)
+    vs.CreateStaticText(
+        dlg, rNoteTxt,
+        'Read-only. Writes devices, their sockets and the real circuit wiring\n'
+        'to reference/ as JSON, for use as a worked example.\n\n'
+        'Point it at a SIGNAL FLOW layer. Location plans and elevations carry\n'
+        'no wiring, so exporting them costs tokens later and teaches nothing.', -1)
+
+    vs.SetFirstLayoutItem(dlg, rScopeLbl)
+    vs.SetBelowItem(dlg, rScopeLbl, rScopePopup, 0, 0)
+    vs.SetBelowItem(dlg, rScopePopup, rNoteTxt, 0, 8)
+
+    def handler(item, data):
+        if item == kSetup:
+            vs.AddChoice(dlg, rScopePopup, 'Selected objects only', 0)
+            vs.AddChoice(dlg, rScopePopup, 'Active layer', 1)
+            vs.AddChoice(dlg, rScopePopup, 'Whole document', 2)
+            vs.SelectChoice(dlg, rScopePopup, SCOPE_LAYER, True)
+        elif item == kOK:
+            settings['scope'] = vs.GetSelectedChoiceIndex(dlg, rScopePopup, 0)
+
+    if vs.RunLayoutDialog(dlg, handler) != kOK:
+        return None
+    if not settings:
+        vs.AlrtDialog('Could not read the dialog settings - nothing was exported.')
+        return None
+    return settings
+
+
+def tool_export_reference():
+    """Returns (status, summary)."""
+    settings = ask_reference_options()
+    if settings is None:
+        return 'cancelled', None
+
+    handles = collect_scope(settings['scope'])
+    if not handles:
+        vs.AlrtDialog('No objects found in the chosen scope.')
+        return 'cancelled', None
+
+    reference = build_reference(handles)
+    if not reference['devices']:
+        vs.AlrtDialog(
+            'Found {} object(s), but no named ConnectCAD devices.\n\n'
+            'This looks like a location plan rather than a signal flow. Switch '
+            'to a schematic layer and try again.'.format(len(handles)))
+        return 'done', 'no devices in scope - wrong layer?'
+
+    label = layer_name(handles[0]) or 'reference'
+    path = save_reference(reference, label)
+
+    wired = len(reference['circuits'])
+    note = ''
+    if reference['unwired_circuits']:
+        note = '\n{} circuit(s) had no stored connection and were skipped.'.format(
+            reference['unwired_circuits'])
+    if not wired and not cc_routine('CC_GetCircuitSource'):
+        note += ('\nConnectCAD\'s circuit routines were unavailable, so no '
+                 'wiring could be read.')
+
+    return 'done', '{} device(s), {} circuit(s).{}\n{}'.format(
+        len(reference['devices']), wired, note, path)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # CLAUDE API CLIENT
 # ═══════════════════════════════════════════════════════════════════════════
 #
@@ -3043,6 +3276,7 @@ def format_usage(usage, cost):
 # ═══════════════════════════════════════════════════════════════════════════
 lToolLbl = 304
 lDumpChk, lNormChk, lMatchChk, lSpellChk = 305, 306, 307, 310
+lRefChk = 311
 lOrderTxt, lHintTxt = 308, 309
 
 
@@ -3058,6 +3292,7 @@ def ask_which_tools():
     vs.CreateCheckBox(dlg, lNormChk, 'Normalise Names  (uppercase / trim)')
     vs.CreateCheckBox(dlg, lMatchChk, 'Match Names and Display Tags')
     vs.CreateCheckBox(dlg, lSpellChk, 'Spell Check')
+    vs.CreateCheckBox(dlg, lRefChk, 'Export Reference Schematic')
     vs.CreateStaticText(
         dlg, lOrderTxt,
         'Run in this order. Normalising first resolves case- and space-only\n'
@@ -3071,7 +3306,8 @@ def ask_which_tools():
     vs.SetBelowItem(dlg, lDumpChk, lNormChk, 0, 0)
     vs.SetBelowItem(dlg, lNormChk, lMatchChk, 0, 0)
     vs.SetBelowItem(dlg, lMatchChk, lSpellChk, 0, 0)
-    vs.SetBelowItem(dlg, lSpellChk, lOrderTxt, 0, 8)
+    vs.SetBelowItem(dlg, lSpellChk, lRefChk, 0, 0)
+    vs.SetBelowItem(dlg, lRefChk, lOrderTxt, 0, 8)
     vs.SetBelowItem(dlg, lOrderTxt, lHintTxt, 0, 8)
 
     def handler(item, data):
@@ -3080,6 +3316,7 @@ def ask_which_tools():
             vs.SetBooleanItem(dlg, lNormChk, True)
             vs.SetBooleanItem(dlg, lMatchChk, False)
             vs.SetBooleanItem(dlg, lSpellChk, False)
+            vs.SetBooleanItem(dlg, lRefChk, False)
         elif item == kOK:
             picked = []
             # Fixed order, independent of which boxes the user ticked first.
@@ -3091,6 +3328,8 @@ def ask_which_tools():
                 picked.append(TOOL_MATCH)
             if vs.GetBooleanItem(dlg, lSpellChk):
                 picked.append(TOOL_SPELL)
+            if vs.GetBooleanItem(dlg, lRefChk):
+                picked.append(TOOL_REFERENCE)
             chosen['tools'] = picked
 
     if vs.RunLayoutDialog(dlg, handler) != kOK:
@@ -3103,6 +3342,7 @@ TOOL_RUNNERS = [
     (TOOL_NORMALISE, 'Normalise Names'),
     (TOOL_MATCH, 'Match Names and Tags'),
     (TOOL_SPELL, 'Spell Check'),
+    (TOOL_REFERENCE, 'Export Reference Schematic'),
 ]
 
 
@@ -3128,6 +3368,7 @@ def run_cc_tools():
         TOOL_NORMALISE: tool_normalise,
         TOOL_MATCH: tool_match_names_and_tags,
         TOOL_SPELL: tool_spellcheck,
+        TOOL_REFERENCE: tool_export_reference,
     }
     names = dict((tool, name) for tool, name in TOOL_RUNNERS)
 

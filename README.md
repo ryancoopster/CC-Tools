@@ -14,6 +14,7 @@ Running **CC Tools** opens a launcher where you tick one or more tools. They alw
 | **Normalise Names** | UPPERCASE and/or trim names and display tags, keeping all linked objects in sync. |
 | **Match Names and Display Tags** | Finds objects whose Name and Display Tag disagree and lets you choose which one wins — in bulk, or one at a time. |
 | **Spell Check** | Finds likely typos in free-text fields, and doubles as a reviewable find-and-replace across every ConnectCAD object. |
+| **Export Reference Schematic** | Read-only. Writes a signal-flow layer out as JSON — devices, their sockets, and the real circuit wiring — for use as a worked example. |
 
 Normalise runs before Match on purpose: uppercasing and trimming collapses every case-only and whitespace-only mismatch (`amp1` vs `AMP1`), so Match only asks about pairs that genuinely differ. Spell Check runs last, once every name has settled.
 
