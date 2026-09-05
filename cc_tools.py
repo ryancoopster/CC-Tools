@@ -887,6 +887,190 @@ def probe_connectcad_api(document):
     return lines
 
 
+# ─── Document profile: how this drawing builds devices ───────────────────────
+#
+# Any generated device has to look like it belongs. Rather than describe house
+# style in a prompt, this reads it off the drawing: which make/model pairs are
+# actually used, what socket set each one carries, how names and tags are
+# constructed, which signals and connectors are in play, and where things live.
+#
+# Written as JSON so it can be handed to a model verbatim, and summarised in the
+# diagnostic report so it is reviewable on its own.
+
+PROFILE_FILE = 'document_profile.json'
+
+
+def name_pattern(value):
+    """Reduce a name to its shape: 'SPK 1.02 HL ARRAY' -> 'AAA 9.99 AA AAAAA'.
+
+    Grouping by shape rather than by text turns 203 individual names into a
+    handful of conventions a generator can follow. Masking is per CHARACTER:
+    doing it per token leaves the digits intact, so '1.01' and '1.02' come out
+    as different conventions and nothing groups at all."""
+    out = []
+    for ch in value:
+        if ch.isalpha():
+            out.append('A')
+        elif ch.isdigit():
+            out.append('9')
+        else:
+            out.append(ch)
+    return ''.join(out)
+
+
+def socket_signature(device, parents_index):
+    """The ordered socket set of one device, as it would need to be recreated."""
+    sockets = []
+    for h in parents_index.get(device, []):
+        if classify(h) != 'socket':
+            continue
+        sockets.append({
+            'name': read_field(h, resolve_field(h, SOCKET_NAME_FIELDS) or ''),
+            'type': read_field(h, 'type'),
+            'signal': read_field(h, 'signal'),
+            'connector': read_field(h, 'connector'),
+        })
+    return sockets
+
+
+def build_document_profile(handles, parents):
+    """Summarise how this document is built, for reuse when generating objects."""
+    # device handle -> its nested sockets
+    children = {}
+    for h in handles:
+        parent = parents.get(h)
+        if parent is not None:
+            children.setdefault(parent, []).append(h)
+
+    models = {}
+    name_shapes = {}
+    tag_matches_name = 0
+    device_count = 0
+    signals = {}
+    connectors = {}
+    rooms = {}
+    racks = {}
+    layers = {}
+    symbols = {}
+    types = {}
+
+    for h in handles:
+        kind = classify(h)
+
+        if kind == 'device':
+            device_count += 1
+            name = read_field(h, resolve_field(h, DEVICE_NAME_FIELDS) or '')
+            tag = read_field(h, resolve_field(h, DEVICE_TAG_FIELDS) or '')
+            make = read_field(h, 'make')
+            model = read_field(h, 'model')
+            symbol = read_field(h, 'symbol')
+            dtype = read_field(h, 'type')
+
+            if not is_unnamed(name):
+                shape = name_pattern(name)
+                entry = name_shapes.setdefault(shape, {'count': 0, 'examples': []})
+                entry['count'] += 1
+                if len(entry['examples']) < 3:
+                    entry['examples'].append(name)
+            if name and name == tag:
+                tag_matches_name += 1
+
+            if make or model:
+                key = '{} | {}'.format(make, model)
+                entry = models.setdefault(key, {
+                    'make': make, 'model': model, 'count': 0,
+                    'symbol': symbol, 'type': dtype, 'sockets': None})
+                entry['count'] += 1
+                if entry['sockets'] is None:
+                    sig = socket_signature(h, children)
+                    if sig:
+                        entry['sockets'] = sig
+
+            for field, bucket in (('loc_room', rooms), ('loc_rack', racks)):
+                value = read_field(h, field)
+                if value and value not in SENTINELS:
+                    bucket[value] = bucket.get(value, 0) + 1
+            if symbol:
+                symbols[symbol] = symbols.get(symbol, 0) + 1
+            if dtype:
+                types[dtype] = types.get(dtype, 0) + 1
+
+        elif kind == 'socket':
+            for field, bucket in (('signal', signals), ('connector', connectors)):
+                value = read_field(h, field)
+                if value and value not in SENTINELS:
+                    bucket[value] = bucket.get(value, 0) + 1
+
+        if kind in ('device', 'circuit'):
+            layer = layer_name(h)
+            if layer:
+                layers[layer] = layers.get(layer, 0) + 1
+
+    def top(bucket, limit=25):
+        return [{'value': k, 'count': v} for k, v in
+                sorted(bucket.items(), key=lambda kv: -kv[1])[:limit]]
+
+    return {
+        'file': vs.GetFName(),
+        'devices': device_count,
+        'tag_equals_name': tag_matches_name,
+        'name_patterns': [
+            {'shape': shape, 'count': info['count'], 'examples': info['examples']}
+            for shape, info in sorted(name_shapes.items(), key=lambda kv: -kv[1]['count'])[:15]
+        ],
+        'device_models': [
+            dict(v) for v in sorted(models.values(), key=lambda m: -m['count'])[:40]
+        ],
+        'signals': top(signals),
+        'connectors': top(connectors),
+        'rooms': top(rooms),
+        'racks': top(racks),
+        'layers': top(layers),
+        'symbols': top(symbols),
+        'device_types': top(types),
+    }
+
+
+def profile_report_lines(profile):
+    """The same profile, readable, for the diagnostic report."""
+    lines = ['--- DOCUMENT PROFILE (how this drawing builds devices) ---']
+    lines.append('Devices: {}   name == tag on {} of them'.format(
+        profile['devices'], profile['tag_equals_name']))
+    lines.append('')
+
+    lines.append('  Naming conventions (A = letters, 9 = digits):')
+    for pattern in profile['name_patterns'][:8]:
+        lines.append('    {:<28} x{:<4} e.g. {}'.format(
+            pattern['shape'][:28], pattern['count'],
+            ', '.join('"{}"'.format(e) for e in pattern['examples'][:2])))
+    lines.append('')
+
+    lines.append('  Device models in use, with their socket sets:')
+    for model in profile['device_models'][:12]:
+        sockets = model.get('sockets') or []
+        lines.append('    {:<34} x{:<4} {} socket(s)'.format(
+            '{} {}'.format(model['make'], model['model'])[:34],
+            model['count'], len(sockets)))
+        for socket in sockets[:4]:
+            lines.append('        {:<14} {:<5} {:<10} {}'.format(
+                socket['name'][:14], socket['type'], socket['signal'],
+                socket['connector']))
+        if len(sockets) > 4:
+            lines.append('        ... and {} more'.format(len(sockets) - 4))
+    lines.append('')
+
+    for label, key in (('Signals', 'signals'), ('Connectors', 'connectors'),
+                       ('Rooms', 'rooms'), ('Racks', 'racks'),
+                       ('Layers', 'layers')):
+        values = profile.get(key, [])[:10]
+        if values:
+            lines.append('  {:<12} {}'.format(
+                label + ':', ', '.join('{} ({})'.format(v['value'], v['count'])
+                                       for v in values)))
+    lines.append('')
+    return lines
+
+
 def build_dump_report():
     lines = report_header('FIELD DUMP')
 
@@ -900,6 +1084,18 @@ def build_dump_report():
     lines.append('')
 
     lines.extend(probe_connectcad_api(all_handles))
+
+    _walked, parents = walk_document(with_parents=True)
+    profile = build_document_profile(all_handles, parents)
+    lines.extend(profile_report_lines(profile))
+    try:
+        import json as _json
+        os.makedirs(BASE_FOLDER, exist_ok=True)
+        with open(os.path.join(BASE_FOLDER, PROFILE_FILE), 'w',
+                  encoding='utf-8') as f:
+            _json.dump(profile, f, indent=2)
+    except Exception:
+        pass          # the readable section above is the important half
 
     device_names = collect_device_names(buckets)
     lines.append('--- NAME REFERENCE SCAN ---')
