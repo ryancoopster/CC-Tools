@@ -388,4 +388,28 @@ gaps16 = [round(drops16[i] - drops16[i + 1], 4) for i in range(2)]
 check('T16 pitch doubled by the 1:2 layer scale',
       gaps16 == [0.5, 0.5], repr(gaps16))
 
+
+# ── T17: units are not guessed out of GetUnits ──────────────────────────────
+# GetUnits returns several values; picking the plausible-looking one returned
+# 25.0 on an inch drawing and multiplied every socket drop by 25.
+m17, vs17 = load(Doc([[dev('x')]]))
+vs17.GetUnits = lambda: (2, 25.0, 1, 0)
+upi, note = m17.units_per_inch()
+check('T17 a stray 25.0 in GetUnits is ignored', upi == 1.0, repr((upi, note)))
+check('T17 and the assumption is stated', 'inch' in note, repr(note))
+
+# The raw values are still reported, so the right field can be identified.
+raw = m17.raw_units_report()
+check('T17 raw GetUnits values are logged', '25.0' in raw and '[1]' in raw, repr(raw))
+
+vs17.GetUnits = lambda: (_ for _ in ()).throw(RuntimeError('nope'))
+check('T17 a failing GetUnits is reported, not fatal',
+      'failed' in m17.raw_units_report(), repr(m17.raw_units_report()))
+
+# With units at 1.0 and a 1:1 layer, the drops are the stated inches.
+check('T17 first drop is half an inch of drawing',
+      m17.socket_drop(0, 1.0, 1.0) == 0.5)
+check('T17 third socket sits one inch down',
+      m17.socket_drop(2, 1.0, 1.0) == 1.0)
+
 R.report_and_exit()

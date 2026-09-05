@@ -3194,28 +3194,37 @@ def probe_make_device(name, x, y, width, height, socket_specs, log,
 def units_per_inch():
     """How many document units make an inch, and how that was decided.
 
-    Drawing coordinates are in document units, but the socket convention is
-    stated in inches, so the two have to be reconciled. GetUnits' shape varies
-    between builds, so the value is probed rather than assumed -- and the
-    probe reports which branch it took, since a wrong conversion would put
-    every socket in the wrong place by a constant factor."""
+    Deliberately NOT guessed from GetUnits. Its return carries several values
+    and picking the plausible-looking one produced 25.0 on a drawing whose unit
+    is the inch, multiplying every socket drop by 25 and scattering them down
+    the sheet.
+
+    The default is 1.0 -- one document unit is one inch -- which is what a
+    Vectorworks drawing set in inches reports, and what the geometry confirms:
+    a device block measures 3.0 x 1.4 units, which is inches for a schematic
+    symbol and absurd as millimetres.
+
+    Override in the config file if you draw in metric; the probe logs the raw
+    GetUnits values so the right one can be identified rather than guessed."""
+    return 1.0, 'assuming 1 unit = 1 inch'
+
+
+def raw_units_report():
+    """Everything GetUnits returns, for identifying the units field for real.
+
+    Reported rather than interpreted: one value in here is units-per-inch, but
+    which one varies, and a wrong pick is invisible until every object is
+    displaced by a constant factor."""
     getter = getattr(vs, 'GetUnits', None)
-    if getter is not None:
-        try:
-            result = getter()
-        except Exception:
-            result = None
-        values = result if isinstance(result, (list, tuple)) else [result]
-        for value in values:
-            try:
-                number = float(value)
-            except (TypeError, ValueError):
-                continue
-            # A plausible units-per-inch: 1 for inches, 25.4 for millimetres,
-            # 2.54 for centimetres. Anything else is some other field.
-            if 0.01 < number < 1000 and number not in (0.0,):
-                return number, 'GetUnits() -> {}'.format(number)
-    return 1.0, 'defaulted to 1 unit = 1 inch (GetUnits unavailable)'
+    if getter is None:
+        return 'GetUnits unavailable'
+    try:
+        result = getter()
+    except Exception as err:
+        return 'GetUnits failed: {}'.format(err)
+    if isinstance(result, (list, tuple)):
+        return ', '.join('[{}]={!r}'.format(i, v) for i, v in enumerate(result))
+    return repr(result)
 
 
 def layer_scale(layer=None):
@@ -3430,6 +3439,7 @@ def active_layer_context(log):
     log.append('Inserting on the ACTIVE layer: {}'.format(name or '(unnamed)'))
     log.append('  layer scale  {}'.format(scale_note))
     log.append('  units        {:.4f} unit(s) per inch  ({})'.format(upi, upi_note))
+    log.append('  GetUnits()   {}'.format(raw_units_report()))
     log.append('  spacing      first {:.2f}" then {:.2f}" on paper'
                ' = {:.4f} / {:.4f} drawing units'.format(
                    SOCKET_FIRST_DROP_IN, SOCKET_PITCH_IN,
