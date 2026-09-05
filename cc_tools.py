@@ -3071,7 +3071,8 @@ def socket_prototype(symbol):
     return None
 
 
-def probe_make_device(name, x, y, width, height, socket_specs, log):
+def probe_make_device(name, x, y, width, height, socket_specs, log,
+                      upi=1.0, scale=1.0):
     """Create one device with sockets.
 
     Returns (device handle or None, every socket added). The second value
@@ -3137,15 +3138,6 @@ def probe_make_device(name, x, y, width, height, socket_specs, log):
                    .format(body_box[0], body_box[2], body_box[1], body_box[3]))
     else:
         log.append('  WARN  device body not measurable; sockets left unplaced')
-
-    upi, how = units_per_inch()
-    scale, scale_note = layer_scale()
-    log.append('  info  units        {:.4f} unit(s) per inch  ({})'.format(upi, how))
-    log.append('  info  layer scale  {}'.format(scale_note))
-    log.append('  info  spacing      first {:.2f}" then {:.2f}" ON PAPER'
-               ' = {:.4f} / {:.4f} drawing units'.format(
-                   SOCKET_FIRST_DROP_IN, SOCKET_PITCH_IN,
-                   socket_drop(0, upi, scale), SOCKET_PITCH_IN * upi * scale))
 
     made = 0
     per_side = {}
@@ -3407,6 +3399,44 @@ def probe_connect(first, second, log):
     return found > 0
 
 
+def active_layer_context(log):
+    """Confirm where objects will land, and make the coordinate mode safe.
+
+    Everything is drawn on the ACTIVE layer and sized against ITS scale, so
+    both are reported before anything is created -- getting the wrong layer
+    silently is the easiest way to produce objects at the wrong size in the
+    wrong place.
+
+    Absolute() matters because relative coordinate mode persists: if anything
+    earlier in the session left it set, every Rect lands somewhere unintended."""
+    layer = None
+    try:
+        layer = vs.ActLayer()
+    except Exception:
+        pass
+    name = ''
+    try:
+        name = vs.GetLName(layer) if layer else ''
+    except Exception:
+        pass
+    scale, scale_note = layer_scale(layer)
+    upi, upi_note = units_per_inch()
+
+    try:
+        vs.Absolute()
+    except Exception:
+        pass
+
+    log.append('Inserting on the ACTIVE layer: {}'.format(name or '(unnamed)'))
+    log.append('  layer scale  {}'.format(scale_note))
+    log.append('  units        {:.4f} unit(s) per inch  ({})'.format(upi, upi_note))
+    log.append('  spacing      first {:.2f}" then {:.2f}" on paper'
+               ' = {:.4f} / {:.4f} drawing units'.format(
+                   SOCKET_FIRST_DROP_IN, SOCKET_PITCH_IN,
+                   socket_drop(0, upi, scale), SOCKET_PITCH_IN * upi * scale))
+    return layer, scale, upi
+
+
 def tool_creation_probe():
     """Returns (status, summary)."""
     if vs.AlertQuestion(
@@ -3418,7 +3448,13 @@ def tool_creation_probe():
         return 'cancelled', None
 
     log = ['CREATION PROBE', '']
-    log.append('Layer: {}'.format(vs.GetLName(vs.ActLayer())))
+    # The active class and coordinate mode belong to the user; borrow and
+    # return them rather than leaving the session changed.
+    try:
+        vs.PushAttrs()
+    except Exception:
+        pass
+    _layer, scale, upi = active_layer_context(log)
     log.append('')
 
     log.append('1. Device with sockets (source)')
@@ -3426,7 +3462,7 @@ def tool_creation_probe():
         PROBE_PREFIX + ' A', 0, 0, 2.0, 1.0,
         [('skt_R', 'OUT 1', 'OUT', 1),
          ('skt_R', 'OUT 2', 'OUT', 1),
-         ('skt_R', 'OUT 3', 'OUT', 1)], log)
+         ('skt_R', 'OUT 3', 'OUT', 1)], log, upi, scale)
     log.append('')
 
     log.append('2. Device with sockets (destination)')
@@ -3434,7 +3470,7 @@ def tool_creation_probe():
         PROBE_PREFIX + ' B', 6.0, 0, 2.0, 1.0,
         [('skt_L', 'IN 1', 'IN', -1),
          ('skt_L', 'IN 2', 'IN', -1),
-         ('skt_L', 'IN 3', 'IN', -1)], log)
+         ('skt_L', 'IN 3', 'IN', -1)], log, upi, scale)
     log.append('')
 
     log.append('3. Wiring them with ConnectSelected')
@@ -3465,6 +3501,11 @@ def tool_creation_probe():
     log.append('')
     log.append('')
     log.append('Undo now to remove the probe objects.')
+
+    try:
+        vs.PopAttrs()
+    except Exception:
+        pass
 
     path = save_text('creation_probe', '\n'.join(report_header('CREATION PROBE')
                                                  + log))

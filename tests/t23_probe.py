@@ -29,6 +29,16 @@ def wire_mock(vs, mod, *, device_ok=True, group_ok=True, symbol_ok=True,
     made['moves'] = moves
     vs.HMove = lambda h, dx, dy: moves.append((dx, dy))
     vs.DSelectAll = lambda: None
+    calls_absolute = []
+    attrs = []
+    made['absolute'] = calls_absolute
+    made['attrs'] = attrs
+    vs.Absolute = lambda: calls_absolute.append(True)
+    vs.PushAttrs = lambda: attrs.append('push')
+    vs.PopAttrs = lambda: attrs.append('pop')
+    vs.ActLayer = lambda: 'LAYER0'
+    vs.GetLName = lambda l: 'Schematic'
+    vs.GetLScale = lambda l: 2.0
     vs.SetSelect = lambda h: None
     def remember(name):
         vs.wanted['name'] = name
@@ -344,5 +354,38 @@ vs15.GetLScale = lambda layer: 2.0
 value, note = m15.layer_scale()
 check('T15 a real scale is reported as a ratio', value == 2.0 and note == '1:2',
       repr(note))
+
+
+# ── T16: objects land on the ACTIVE layer, sized to ITS scale ───────────────
+m16, vs16 = load(Doc([[dev('x')]]))
+made16, _c = wire_mock(vs16, m16, circuits=[Obj('Circuit', {})])
+vs16.AlertQuestion = lambda *a: 1
+m16.tool_creation_probe()
+
+import os
+log16 = None
+for name in sorted(os.listdir(m16.BASE_FOLDER), reverse=True):
+    if name.startswith('creation_probe'):
+        log16 = open(os.path.join(m16.BASE_FOLDER, name), encoding='utf-8').read()
+        break
+
+check('T16 names the active layer it is drawing on',
+      'Inserting on the ACTIVE layer: Schematic' in (log16 or ''),
+      (log16 or '')[:300])
+check('T16 reports that layer\'s scale', '1:2' in (log16 or ''), (log16 or '')[:300])
+
+# Relative coordinate mode persists across a session; left set by anything
+# earlier, every Rect would land somewhere unintended.
+check('T16 forces absolute coordinates', made16['absolute'], repr(made16['absolute']))
+
+# The active class and attributes belong to the user.
+check('T16 borrows and returns the drawing attributes',
+      made16['attrs'] == ['push', 'pop'], repr(made16['attrs']))
+
+# Spacing must come from the active layer's scale, not a default.
+drops16 = [dy for dx, dy in made16['moves']]
+gaps16 = [round(drops16[i] - drops16[i + 1], 4) for i in range(2)]
+check('T16 pitch doubled by the 1:2 layer scale',
+      gaps16 == [0.5, 0.5], repr(gaps16))
 
 R.report_and_exit()
