@@ -270,8 +270,26 @@ def build_vs(doc, selected=()):
         v.dialog_calls.append(('GetFile',))
         return v.file_choice
 
+    # Classes. NameClass creates AND activates, which is the trap the real
+    # routine sets, so the mock reproduces it faithfully.
+    def NameClass(name):
+        v.classes.add(name)
+        v.active_class = name
+
+    def ActiveClass():
+        return v.active_class
+
+    def SetClass(h, name):
+        v.object_class[h] = name
+
+    def GetClass(h):
+        return v.object_class.get(h, 'None')
+
     v.file_choice = ''
     v.dialog_calls = []
+    v.classes = set()
+    v.active_class = 'None'
+    v.object_class = {}
     for name, fn in list(locals().items()):
         if callable(fn) and name[0].isupper():
             setattr(v, name, fn)

@@ -221,8 +221,8 @@ check('T8 signal written', circ.fields['Signal'] == 'MILAN PRI', repr(circ.field
 check('T8 cable written', circ.fields['Cable'] == 'SPK1 NET', repr(circ.fields))
 check('T8 ConnectCAD\'s own wire number left alone',
       circ.fields['Number'] == 'CC-7', repr(circ.fields))
-check('T8 reports what it wrote', set(written) == {'Signal', 'Cable'},
-      repr(written))
+check('T8 reports what it wrote',
+      set(written) == {'Signal', 'Cable', 'class'}, repr(written))
 check('T8 line mode untouched when the preference is blank',
       circ.fields['CircuitType'] == 'polyline', repr(circ.fields))
 
@@ -315,5 +315,40 @@ m.finish_circuit(routed, {'signal': 'PWR'}, dict(m.PREF_DEFAULTS,
                                                  circuit_type='rounded'))
 check('T10 a routed circuit still converts',
       routed.fields['CircuitType'] == 'rounded', repr(routed.fields))
+
+# ── T11: circuits are filed in their signal's class ───────────────────────
+# ConnectCAD's own automatic classing is gated on the hidden __Version param
+# and has already fired by the time ConnectSelected hands the circuit back, so
+# a signal written from script does NOT reclass it. The tool must.
+check('T11 class name matches ConnectCAD\'s',
+      m.signal_class_name('MILAN PRI') == 'CC-Circuit-Signal-MILAN PRI',
+      m.signal_class_name('MILAN PRI'))
+check('T11 no signal, no class', m.signal_class_name('') == ''
+      and m.signal_class_name('   ') == '')
+
+vs.classes = set()
+vs.active_class = 'Dimensions'
+vs.object_class = {}
+c = Obj('Circuit', {'Signal': '', 'Number': '', 'Cable': '', 'Label': '',
+                    'CircuitType': ''})
+written = m.finish_circuit(c, {'signal': 'PWR', 'cable': 'HL MAIN 1-3'}, plain)
+check('T11 the class is created', 'CC-Circuit-Signal-PWR' in vs.classes,
+      repr(vs.classes))
+check('T11 the circuit is put in it',
+      vs.object_class.get(c) == 'CC-Circuit-Signal-PWR', repr(vs.object_class))
+check('T11 it is reported as written', 'class' in written, repr(written))
+
+# The trap: NameClass activates as well as creates, so a tool that forgets to
+# restore leaves every later object in the wrong class.
+check('T11 the active class is restored', vs.active_class == 'Dimensions',
+      repr(vs.active_class))
+
+# A circuit the job gives no signal keeps whatever class it had.
+vs.object_class = {}
+c2 = Obj('Circuit', {'Signal': '', 'Number': '', 'Cable': '', 'Label': '',
+                     'CircuitType': ''})
+m.finish_circuit(c2, {'cable': 'UNKNOWN'}, plain)
+check('T11 no signal means no reclassing', c2 not in vs.object_class,
+      repr(vs.object_class))
 
 R.report_and_exit()

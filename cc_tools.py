@@ -3092,6 +3092,19 @@ def circuit_endpoints(circuit, device_ids=None):
     return call('CC_GetCircuitSource'), call('CC_GetCircuitDest')
 
 
+def object_class(handle):
+    """An object's class name, or '' if it cannot be read.
+
+    Worth exporting: ConnectCAD files circuits by signal into
+    CC-Circuit-Signal-<SIGNAL>, and those classes are how a schematic gets
+    divided across sheets. A reference export without them cannot show how a
+    drawing is organised."""
+    try:
+        return vs.GetClass(handle) or ''
+    except Exception:
+        return ''
+
+
 def build_reference(handles):
     """The drawing as structured data: devices, their sockets, and the wiring.
 
@@ -3131,6 +3144,7 @@ def build_reference(handles):
             'rack': read_field(h, 'loc_rack'),
             'rack_u': read_field(h, 'loc_rackU'),
             'layer': layer_name(h),
+            'class': object_class(h),
             'sockets': device_local_sockets(h),
         })
         # Position matters as much as topology here. ConnectCAD wires by
@@ -3159,6 +3173,7 @@ def build_reference(handles):
             # point of exporting a reference.
             'cable': read_field(h, CIRCUIT_CABLE_FIELD),
             'line_mode': read_field(h, CIRCUIT_TYPE_FIELD),
+            'class': object_class(h),
             'from': source,
             'to': destination,
         }
@@ -5508,6 +5523,77 @@ CIRCUIT_LABEL_FIELD = 'Label'
 CIRCUIT_TYPE_FIELD = 'CircuitType'   # line routing mode; a real job uses 'rounded'
 
 
+# ConnectCAD files every circuit in a class named after its signal. The prefix
+# is the resource string "CC-Circuit-Signal" from ConnectCADClasses.vwstrings,
+# whose own comment reads "Must be the same as the class name in all ConnectCAD
+# default content!" -- so it is fixed, not localised.
+#
+# These classes are how a schematic gets divided: a sheet viewport showing only
+# CC-Circuit-Signal-LINE is the analog drawing. Getting the class wrong does not
+# look wrong on the design layer, it silently empties a sheet.
+CIRCUIT_SIGNAL_CLASS_PREFIX = 'CC-Circuit-Signal'
+
+
+def signal_class_name(signal):
+    """The class a circuit of this signal belongs in, or '' for no signal."""
+    signal = (signal or '').strip()
+    if not signal:
+        return ''
+    return '{}-{}'.format(CIRCUIT_SIGNAL_CLASS_PREFIX, signal)
+
+
+def ensure_class(name):
+    """Make sure a class exists, leaving the active class as it was.
+
+    NameClass creates the class if it is missing AND makes it active, so the
+    previous active class has to be put back -- otherwise every object drawn
+    afterwards silently lands in the last class this touched. Creating a class
+    that already exists is a no-op, so there is no need to test first."""
+    if not name:
+        return False
+    previous = ''
+    try:
+        previous = vs.ActiveClass() or ''
+    except Exception:
+        pass
+    try:
+        vs.NameClass(name)
+    except Exception:
+        return False
+    finally:
+        if previous and previous != name:
+            try:
+                vs.NameClass(previous)
+            except Exception:
+                pass
+    return True
+
+
+def apply_signal_class(handle, signal):
+    """Put a circuit in the class its signal calls for. Returns True if set.
+
+    WHY THIS IS NEEDED, rather than left to ConnectCAD: the automatic classing
+    lives in the circuit's reset handler but is gated on the hidden __Version
+    parameter -- it runs only while __Version <= 2599, and the reset then
+    stamps 2600. ConnectSelected creates the circuit AND resets it, so by the
+    time a signal is written from script that gate has already closed and the
+    circuit keeps the class it was given for its default signal.
+
+    Changing the signal in the Object Info palette DOES reclass, because the
+    OIP value-transfer path does it separately -- which is why this looks
+    automatic when you do it by hand and is not when a script does it."""
+    name = signal_class_name(signal)
+    if not name:
+        return False
+    if not ensure_class(name):
+        return False
+    try:
+        vs.SetClass(handle, name)
+        return True
+    except Exception:
+        return False
+
+
 def finish_circuit(handle, circuit, prefs):
     """Write the job's own values onto a circuit ConnectSelected just made.
 
@@ -5550,6 +5636,12 @@ def finish_circuit(handle, circuit, prefs):
             vs.ResetObject(handle)
         except Exception:
             pass
+
+    # AFTER the reset, deliberately. Reset is what would re-class the circuit
+    # if it still could, so setting the class first would be undone.
+    signal = (circuit.get('signal') or '').strip()
+    if signal and apply_signal_class(handle, signal):
+        written.append('class')
     return written
 
 
