@@ -4217,7 +4217,9 @@ PREFS_FILE = 'preferences.json'
 PREF_DEFAULTS = {
     'column_inches': 4.0,       # horizontal pitch between device columns
     'row_inches': 2.5,          # vertical pitch between device rows
-    'section_gap_inches': 3.0,  # blank space between signal sections
+    # 0 = sections sit flush, which is how these drawings are actually laid
+    # out: contiguous regions of a dense field, with no space between them.
+    'section_gap_inches': 0.0,  # blank space between sections
     'circuit_type': '',         # '' = leave ConnectCAD's own default alone
     'label_symbol': '',         # '' = leave ConnectCAD's own default alone
 }

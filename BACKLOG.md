@@ -56,7 +56,7 @@ Still to do:
 ## Drawing preferences
 
 **Done.** `CC Tools > Preferences` writes `~/Documents/CC Tools/preferences.json`
-and covers column spacing, row spacing, section gap, circuit line mode and the
+and covers column spacing, row spacing, section gap (0 by default), circuit line mode and the
 device label symbol. Spacing is in printed inches and is scaled by the layer.
 
 Still open: the label-symbol field is a free-text box, because the list of

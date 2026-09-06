@@ -351,4 +351,27 @@ m.finish_circuit(c2, {'cable': 'UNKNOWN'}, plain)
 check('T11 no signal means no reclassing', c2 not in vs.object_class,
       repr(vs.object_class))
 
+# ── T12: the default gap is flush, and flush is not overlapping ──────────
+check('T12 default section gap is 0',
+      m.PREF_DEFAULTS['section_gap_inches'] == 0.0,
+      repr(m.PREF_DEFAULTS['section_gap_inches']))
+
+job = {
+    'sections': [{'name': 'One'}, {'name': 'Two'}],
+    'devices': [d('a', 'A', section='One'), d('b', 'B', section='Two')],
+    'circuits': [],
+}
+pos, notes = m.resolve_job_positions(job, GX, GY, 1.0, 1.0, m.PREF_DEFAULTS)
+one = m.section_extent([job['devices'][0]], pos, 1.0, 1.0, GY)
+two = m.section_extent([job['devices'][1]], pos, 1.0, 1.0, GY)
+check('T12 sections sit flush at the default', abs(one[1] - two[0]) < 1e-9,
+      'first bottom %s, second top %s' % (one[1], two[0]))
+check('T12 flush still means no overlap', two[0] <= one[1] and two[1] < one[1],
+      repr((one, two)))
+check('T12 a gap can still be asked for',
+      m.section_extent([job['devices'][1]],
+                       m.resolve_job_positions(job, GX, GY, 1.0, 1.0,
+                           dict(m.PREF_DEFAULTS, section_gap_inches=5.0))[0],
+                       1.0, 1.0, GY)[0] < two[0])
+
 R.report_and_exit()
