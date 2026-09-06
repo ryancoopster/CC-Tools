@@ -213,4 +213,49 @@ check('T12 truly absent end still flagged',
 check('T12 and its source is None, not an empty name',
       ref12['circuits'][0]['from'] is None, repr(ref12['circuits'][0]))
 
+# ── Equipment physical data is found on OTHER layers ─────────────────────
+# Equipment items live on rack layers; the devices being exported live on a
+# schematic layer. A layer-scoped export must still find them, or the physical
+# properties come back empty -- which is what happened on the first real run.
+from mockvs import Obj as _Obj
+
+SCHEM = [Obj('Device', {'name': 'AMP 1', 'tag': 'AMP 1',
+                        'make': 'Meyer Sound', 'model': 'Galaxy 408'},
+             children=[sock('OUT 1')])]
+RACK = [Obj('EquipItem', {'name': 'AMP 1', 'make': 'Meyer Sound',
+                          'model': 'Galaxy 408',
+                          'Width': '1.583', 'Height': '0.145',
+                          'Depth': '1.5', 'weight': '7.6', 'power': '250',
+                          'width_R': 'full-rack', 'heightU': '1',
+                          'mount': 'front'})]
+m2, vs2 = load(Doc([SCHEM, RACK]))
+
+# Scope deliberately narrowed to the schematic layer only.
+schematic_only = [h for h in m2.walk_document()
+                  if m2.classify(h) == 'device' or m2.classify(h) == 'socket']
+ref = m2.build_reference(schematic_only)
+
+check('equipment found despite a device-only scope',
+      len(ref.get('equipment') or {}) == 1, repr(ref.get('equipment')))
+entry = list((ref.get('equipment') or {}).values())[0] if ref.get('equipment') else {}
+check('dimensions captured',
+      entry.get('width') == '1.583' and entry.get('depth') == '1.5', repr(entry))
+check('weight and power captured',
+      entry.get('weight') == '7.6' and entry.get('power') == '250', repr(entry))
+check('rack width and height captured',
+      entry.get('rack_width') == 'full-rack' and entry.get('rack_u') == '1',
+      repr(entry))
+check('keyed by make and model',
+      list((ref.get('equipment') or {}).keys()) == ['Meyer Sound | Galaxy 408'],
+      repr(list((ref.get('equipment') or {}).keys())))
+
+# Zero and placeholder values must not be recorded as data.
+m3, vs3 = load(Doc([[Obj('EquipItem', {'name': 'X', 'make': 'A', 'model': 'B',
+                                       'weight': '0', 'power': '0',
+                                       'Width': '2.0', 'mount': '---'})]]))
+phys = m3.equipment_physical(m3.walk_document()[0])
+check('a zero weight is not recorded', 'weight' not in phys, repr(phys))
+check('a --- placeholder is not recorded', 'mount' not in phys, repr(phys))
+check('a real value still is', phys.get('width') == '2.0', repr(phys))
+
 R.report_and_exit()

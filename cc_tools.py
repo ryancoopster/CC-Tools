@@ -3199,8 +3199,15 @@ def build_reference(handles):
 
     # Equipment items, keyed by make/model, so the export can seed the curated
     # device list with real dimensions, weights and rack heights.
+    #
+    # Scanned across the WHOLE DOCUMENT even when the export is scoped to one
+    # layer. Equipment items live on rack layers while the devices being
+    # exported live on a schematic layer, so a layer-scoped walk finds none of
+    # them -- which is exactly what happened the first time this ran. The same
+    # reasoning as the link-sync scan: the scope says which devices to write
+    # out, not where their physical data is allowed to live.
     equipment = {}
-    for h in handles:
+    for h in walk_document():
         if classify(h) != 'equipment':
             continue
         make = read_field(h, 'make').strip()
