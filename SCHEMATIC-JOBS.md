@@ -53,6 +53,21 @@ tool checks both rather than drawing something that cannot work:
 That second point is why device names legitimately repeat in a job, and why
 circuits reference ids rather than names.
 
+### Sections and classes do different jobs
+
+ConnectCAD files every circuit in a class named after its signal —
+`CC-Circuit-Signal-LINE`, `CC-Circuit-Signal-PWR`, and so on — and a sheet
+viewport filtered to one of those is that signal's drawing. CC Tools sets that
+class on every circuit it creates, because ConnectCAD's own automatic classing
+has already run and closed by the time a script writes the signal.
+
+**Devices are never classed**, by ConnectCAD or by this tool. That is correct
+and deliberate: a device belongs on every sheet its circuits appear on.
+
+So the two mechanisms are not alternatives. Classes divide the **signals**;
+sections divide the **drawing area**, which is why a device is drawn again in
+each section — each region needs its own block to attach its own circuits to.
+
 ## Cable names
 
 Each circuit carries a `cable` — the short human-readable name drawn along the

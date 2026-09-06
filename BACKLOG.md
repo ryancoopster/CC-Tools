@@ -157,3 +157,32 @@ Read it as bytes and split on `\r\n`: Python universal newlines corrupts it.
 A companion `SignalTypes.txt` (UTF-8, CRLF, 1 header + 79 rows) defines the
 signal vocabulary, and the DB's signals are a strict subset of it. Note the
 app and user copies use DIFFERENT line terminators.
+
+
+## How a schematic divides — settled
+
+Confirmed with Ryan, 2026-09-06, after two wrong guesses on my part.
+
+**Circuits carry the class; devices do not.** ConnectCAD files every circuit in
+`CC-Circuit-Signal-<SIGNAL>` and a sheet viewport filtered to one of those
+classes is that signal's drawing. Devices are never classed by signal, and the
+`CC-Device-*` classes ConnectCAD ships are not device classes at all — they are
+part classes for components INSIDE a device PIO (`CC-Device-Graphics`,
+`CC-Device-DisplayTag`, `CC-Device-Description`, `CC-Device-Location`,
+`CC-Device-PanelName`, `CC-Device-ExternalName`).
+
+So **the tool must not class devices**, and `apply_signal_class` is deliberately
+only ever called on circuits. Two wrong ideas that were considered and are
+recorded here so they are not revisited:
+
+- *Class devices by section.* Wrong — nothing in ConnectCAD does this, and a
+  device belongs on every sheet its circuits appear on.
+- *Drop spatial banding in favour of classes.* Wrong — they are not
+  alternatives. Classes divide the SIGNALS; the spatial regions are why a
+  device is drawn again in each section, so that each region has its own block
+  to attach its own circuits to.
+
+The Geffen drawing shows no GAPS between regions, which is what misled me
+into thinking there were no regions. Contiguous regions of a dense field are
+still regions; the drafter simply did not leave space between them. The
+`section_gap_inches` preference exists so generated work can, or need not.
