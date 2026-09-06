@@ -2,34 +2,44 @@
 
 Things asked for that aren't built yet, with enough context to pick up cold.
 
-## Socket spacing — house convention
+## Socket spacing — ConnectCAD's own rule
 
-Implemented: the first socket sits **0.5" below the top** of the device block,
-and every socket after it is **0.25" below the last**, per side. Sockets stack
-from the top on a fixed pitch rather than spreading across the block's height,
-so a tall device keeps the same spacing as a short one.
+Layout is no longer hard-coded inches. ConnectCAD derives every distance from
+the **schematic grid** `(gx, gy)` times an integer count from Device Builder
+preferences: socket pitch is **one grid unit**, the first socket sits
+**(top space + 1) units** below the insertion point, minimum width is **6 grid
+spaces**. On a 0.25" grid that is exactly the 0.25" pitch and 0.5" first drop
+these drawings use — so the convention is ConnectCAD's default, expressed in
+inches, and deriving it keeps the drawings right while surviving a different
+grid.
 
-The block is **sized to its sockets**: 0.5" to the first, 0.25" between, and
-0.5" clear below the last. That bottom margin mirrors the top and is a guess —
-worth measuring against a real drawing.
+The grid comes from the `ConnectCAD Settings...` record, falling back to the
+document grid preferences (selectors 78/79), then to a stated default. The
+Device Builder preference block itself is serialised on the Device record
+format and is **not reachable from script**, so the stock counts
+(min width 6, top 1, bottom 0, group gap 0) are constants here — a drawing
+whose Device Preferences differ needs them changed to match.
 
-The body is also widened to the header, which is a fixed-width symbol
-(3.0 units for `dev_label_generic`). Other label symbols may differ, so it is
-measured rather than assumed — which ties into the label-symbol preference
-below.
+## Build devices from symbols instead of by hand
 
-Sockets hang from the **header baseline** — local `y = 0`, where ConnectCAD's
-name/make header meets the rectangle it was given. `CC_DeviceFromShape` adds the
-header above your rectangle, so the top of the block is a header's height higher
-and measuring from it puts the whole stack too high.
+The current path — bare device from `CC_DeviceFromShape`, sockets duplicated in,
+positions computed — reimplements what ConnectCAD's Device Builder does.
 
-Stated in inches on the printed sheet, applied in document units × layer scale.
-Document units are assumed to be inches: `GetUnits()` returns several values and
-picking one by shape gave 25.0 on an inch drawing, multiplying every drop by 25.
-The raw values are logged so the right field can be identified from evidence if
-this ever needs to work in metric.
+The better route is ConnectCAD's own: a **device symbol** is a symbol definition
+containing one fully-built Device PIO with its sockets already in the profile
+group. `Utilities::PlaceObjectFromSymbol` places one by finding the Device PIO
+inside the symbol definition, duplicating it onto the layer, copying any records
+the duplicate lacks, resetting and positioning it — all ordinary VectorScript.
 
-## Drawing preferences
+Workflow: build one device correctly by hand, "Save as Symbol…" from its Object
+Info palette, then stamp copies. This removes every geometry rule above from the
+generator's responsibility, and makes generated devices match house style
+exactly because they *are* the house device.
+
+Not yet implemented. Worth doing before the generator, since it decides how much
+layout code the generator needs at all.
+
+## Drawing preferences## Drawing preferences
 
 Generated objects currently take whatever ConnectCAD defaults to. Two choices
 should be the user's, not the tool's:

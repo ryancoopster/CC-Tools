@@ -3024,10 +3024,27 @@ TYPE_RECT = 3                 # the body rectangle handed to CC_DeviceFromShape
 TYPE_SYMBOL = 15              # the label symbol ConnectCAD draws as the header
 DEFAULTS_FOLDER = 14          # BuildResourceList: Defaults folder
 
-# House convention for socket placement, read off the Chautauqua and Geffen
-# drawings: the first socket sits half an inch below the device's HEADER --
-# the name/make block at the top -- and every socket after it is a quarter
-# inch below the last.
+# ConnectCAD's own socket layout, which is not hard-coded geometry: every
+# distance is the SCHEMATIC GRID times an integer count from Device Builder
+# preferences. Socket pitch is one grid unit; the first socket sits
+# (top space + 1) units below the insertion point, two with stock preferences.
+#
+# On a 0.25" grid that is a 0.25" pitch and a 0.5" first drop -- exactly the
+# convention these drawings use. Deriving it from the grid rather than hard-
+# coding those inches means it stays right on a drawing gridded differently.
+#
+# Preference defaults, from CDeviceBuilderPrefs: minimum width 6 grid spaces,
+# 1 space above, 0 below, 0 between socket groups. The block itself is
+# serialised on the Device record format and is not reachable from script, so
+# these are the stock values; a drawing whose Device Preferences differ needs
+# them changed to match.
+GRID_MIN_WIDTH_UNITS = 6
+GRID_TOP_SPACE_UNITS = 1
+GRID_BOTTOM_SPACE_UNITS = 0
+GRID_GROUP_GAP_UNITS = 0
+GRID_FALLBACK = 0.25          # ConnectCAD seeds its own callers with a default
+
+# Used only when the schematic grid cannot be read at all.
 #
 # The header is not part of the rectangle you hand to CC_DeviceFromShape.
 # A 2.0 x 1.0 request came back as a body spanning local y -1.000..0.400: the
@@ -3086,7 +3103,7 @@ def socket_prototype(symbol):
 
 
 def probe_make_device(name, x, y, width, height, socket_specs, log,
-                      upi=1.0, scale=1.0):
+                      upi=1.0, scale=1.0, grid=None):
     """Create one device with sockets.
 
     Returns (device handle or None, every socket added). The second value
@@ -3095,9 +3112,13 @@ def probe_make_device(name, x, y, width, height, socket_specs, log,
     # The rectangle becomes the body, so give it the height its sockets need
     # before ConnectCAD turns it into a device -- growing it afterwards would
     # move everything already placed against it.
-    height = body_height_for(socket_specs, upi, scale)
-    log.append('  info  body height   {:.3f} units for {} socket(s)'.format(
-        height, len(socket_specs)))
+    gx, gy = grid if grid else (None, None)
+    height = body_height_for(socket_specs, upi, scale, gy)
+    minimum = body_min_width(gx)
+    if minimum > width:
+        width = minimum
+    log.append('  info  body         {:.3f} wide x {:.3f} tall for {} socket(s)'
+               .format(width, height, len(socket_specs)))
     try:
         vs.Rect(x - width / 2.0, y + height, x + width / 2.0, y)
         rect = vs.LNewObj()
@@ -3187,7 +3208,7 @@ def probe_make_device(name, x, y, width, height, socket_specs, log,
         # dimensions -- a 2.0 x 1.0 request came back 3.0 x 1.4 -- so the
         # socket is moved onto the device's MEASURED edge. Anything derived
         # from the requested width lands in the wrong place.
-        place_socket(socket, body_box, side, index, upi, scale)
+        place_socket(socket, body_box, side, index, upi, scale, gy)
         write_field(socket, 'name', socket_name)
         write_field(socket, 'tag', socket_name)
         write_field(socket, 'type', socket_type)
@@ -3302,20 +3323,12 @@ def layer_scale(layer=None):
     return value, '1:{:g}'.format(value)
 
 
-def socket_drop(index, upi, scale=1.0):
-    """How far below the device's top edge socket `index` sits, in drawing units.
-
-    The convention is in printed inches, so the layer scale is applied: at 1:2
-    a quarter-inch gap on paper is half a unit in the drawing."""
-    return (SOCKET_FIRST_DROP_IN + index * SOCKET_PITCH_IN) * upi * scale
-
-
 def group_inventory(group, log_prefix='  '):
     """Every object in the profile group, with its record and bounds.
 
     The header and the body are both drawn by ConnectCAD and only one of them
     is the rectangle handed in, so which is which has to be read rather than
-    assumed."""
+    assumed. This is how the width mismatch was found."""
     out = []
     if not group:
         return ['{}info  no profile group'.format(log_prefix)]
@@ -3341,24 +3354,75 @@ def group_inventory(group, log_prefix='  '):
     return out
 
 
-def body_height_for(socket_specs, upi, scale):
+def schematic_grid():
+    """The schematic grid (gx, gy), and where it came from.
+
+    ConnectCAD reads SchematicsGridX / SchematicsGridY off the 'ConnectCAD
+    Settings...' record format and falls back to the document's own grid
+    preferences (selectors 78 and 79). This follows the same order, so a
+    drawing with a customised schematic grid lays out the way ConnectCAD
+    would lay it out."""
+    record = 'ConnectCAD Settings...'
+    try:
+        handle = vs.GetObject(record)
+    except Exception:
+        handle = None
+    if handle:
+        try:
+            gx = float(vs.GetRField(handle, record, 'SchematicsGridX'))
+            gy = float(vs.GetRField(handle, record, 'SchematicsGridY'))
+            if gx > 0 and gy > 0:
+                return gx, gy, 'ConnectCAD Settings record'
+        except (TypeError, ValueError, Exception):
+            pass
+    try:
+        gx = float(vs.GetPrefReal(78))
+        gy = float(vs.GetPrefReal(79))
+        if gx > 0 and gy > 0:
+            return gx, gy, 'document grid preferences (78/79)'
+    except Exception:
+        pass
+    return (GRID_FALLBACK, GRID_FALLBACK,
+            'grid unreadable; assuming {}"'.format(GRID_FALLBACK))
+
+
+def socket_drop(index, upi, scale=1.0, gy=None):
+    """How far below the insertion point socket `index` sits.
+
+    ConnectCAD's rule: one grid unit per socket, starting (top space + 1)
+    units down. The inch constants are a fallback for when the grid cannot
+    be read -- they encode the same thing for a 0.25" grid."""
+    if gy and gy > 0:
+        return ((GRID_TOP_SPACE_UNITS + 1) + index) * gy
+    return (SOCKET_FIRST_DROP_IN + index * SOCKET_PITCH_IN) * upi * scale
+
+
+def body_height_for(socket_specs, upi, scale, gy=None):
     """How tall the body must be to hold its sockets.
 
-    Sockets hang from the header on a fixed pitch, so the block has to be
-    sized to the number of them rather than the other way round -- a body
-    drawn to an arbitrary height leaves the last socket sitting on its edge,
-    or half outside it.
+    ConnectCAD's rule, in grid units: one row per socket, plus the space
+    above (top space + 1) and the space below. Left and right are independent
+    stacks, so the deeper side decides.
 
-    Counted per side: left and right are independent stacks, so the taller
-    of the two decides."""
+    Falls back to the inch constants only when the grid cannot be read."""
     per_side = {}
     for spec in socket_specs:
         side = spec[3]
         per_side[side] = per_side.get(side, 0) + 1
     deepest = max(per_side.values()) if per_side else 1
+    if gy and gy > 0:
+        rows = (GRID_TOP_SPACE_UNITS + 1) + deepest + GRID_BOTTOM_SPACE_UNITS
+        return rows * gy
     inches = (SOCKET_FIRST_DROP_IN + (deepest - 1) * SOCKET_PITCH_IN
               + SOCKET_BOTTOM_MARGIN_IN)
     return inches * upi * scale
+
+
+def body_min_width(gx):
+    """ConnectCAD's minimum device width: 6 grid spaces by default."""
+    if gx and gx > 0:
+        return GRID_MIN_WIDTH_UNITS * gx
+    return 0.0
 
 
 def header_bounds(group):
@@ -3440,7 +3504,7 @@ def header_baseline(body_box):
     return 0.0
 
 
-def place_socket(socket, body_box, side, index, upi, scale=1.0):
+def place_socket(socket, body_box, side, index, upi, scale=1.0, gy=None):
     """Move a socket onto the device body's edge at its place in the stack.
 
     `body_box` must come from body_bounds -- the device's own bounds are in a
@@ -3455,7 +3519,7 @@ def place_socket(socket, body_box, side, index, upi, scale=1.0):
     centre_x = (socket_box[0] + socket_box[2]) / 2.0
     centre_y = (socket_box[1] + socket_box[3]) / 2.0
     target_x = right if side > 0 else left
-    target_y = header_baseline(body_box) - socket_drop(index, upi, scale)
+    target_y = header_baseline(body_box) - socket_drop(index, upi, scale, gy)
     try:
         vs.HMove(socket, target_x - centre_x, target_y - centre_y)
         return True
@@ -3601,11 +3665,12 @@ def active_layer_context(log):
     log.append('  layer scale  {}'.format(scale_note))
     log.append('  units        {:.4f} unit(s) per inch  ({})'.format(upi, upi_note))
     log.append('  GetUnits()   {}'.format(raw_units_report()))
-    log.append('  spacing      first {:.2f}" then {:.2f}" on paper'
+    gx, gy, grid_note = schematic_grid()
+    log.append('  grid         {:.4f} x {:.4f}  ({})'.format(gx, gy, grid_note))
+    log.append('  spacing      {} grid unit(s) to the first socket, then 1 each'
                ' = {:.4f} / {:.4f} drawing units'.format(
-                   SOCKET_FIRST_DROP_IN, SOCKET_PITCH_IN,
-                   socket_drop(0, upi, scale), SOCKET_PITCH_IN * upi * scale))
-    return layer, scale, upi
+                   GRID_TOP_SPACE_UNITS + 1, socket_drop(0, upi, scale, gy), gy))
+    return layer, scale, upi, (gx, gy)
 
 
 def tool_creation_probe():
@@ -3625,7 +3690,7 @@ def tool_creation_probe():
         vs.PushAttrs()
     except Exception:
         pass
-    _layer, scale, upi = active_layer_context(log)
+    _layer, scale, upi, grid = active_layer_context(log)
     log.append('')
 
     log.append('1. Device with sockets (SHORT name)')
@@ -3633,7 +3698,7 @@ def tool_creation_probe():
         PROBE_PREFIX + ' A', 0, 0, 2.0, 1.0,
         [('skt_R', 'OUT 1', 'OUT', 1),
          ('skt_R', 'OUT 2', 'OUT', 1),
-         ('skt_R', 'OUT 3', 'OUT', 1)], log, upi, scale)
+         ('skt_R', 'OUT 3', 'OUT', 1)], log, upi, scale, grid)
     log.append('')
 
     log.append('2. Device with sockets (LONG name -- does the header outgrow '
@@ -3642,7 +3707,7 @@ def tool_creation_probe():
         PROBE_PREFIX + ' B WITH A MUCH LONGER NAME', 6.0, 0, 2.0, 1.0,
         [('skt_L', 'IN 1', 'IN', -1),
          ('skt_L', 'IN 2', 'IN', -1),
-         ('skt_L', 'IN 3', 'IN', -1)], log, upi, scale)
+         ('skt_L', 'IN 3', 'IN', -1)], log, upi, scale, grid)
     log.append('')
 
     log.append('3. Wiring them with ConnectSelected')

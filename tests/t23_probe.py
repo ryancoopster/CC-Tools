@@ -209,10 +209,12 @@ check('T9 a log was written', log is not None)
 check('T9 device bounds reported', 'device (doc)' in (log or ''), (log or '')[:200])
 check('T9 body bounds reported in the local frame',
       'body (local)' in (log or ''), (log or '')[:400])
-check('T9 each socket drop reported in units AND paper inches',
-      'on paper' in (log or ''), (log or '')[:400])
+check('T9 the grid the layout came from is reported',
+      'grid  ' in (log or ''), (log or '')[:400])
 check('T9 the layer scale is reported',
       'layer scale' in (log or ''), (log or '')[:400])
+check('T9 socket spacing is expressed in grid units',
+      'grid unit(s) to the first socket' in (log or ''), (log or '')[:400])
 check('T9 the unit conversion is reported',
       'unit(s) per inch' in (log or ''), (log or '')[:400])
 
@@ -232,7 +234,7 @@ device_box = (-1.5, 0.0, 1.5, 1.4)          # left, bottom, right, top
 check('T10 bounds normalises top/bottom order',
       m10.bounds(socket) == (-0.195, -0.063, 0.062, 0.142), repr(m10.bounds(socket)))
 
-m10.place_socket(socket, device_box, 1, 0, 1.0, 1.0)
+m10.place_socket(socket, device_box, 1, 0, 1.0, 1.0, None)
 # socket centre is (-0.0665, 0.0395); target is the right edge, 0.5" below top
 check('T10 right socket lands on the right edge',
       moved and abs(moved[-1][0] - (1.5 - -0.0665)) < 0.001, repr(moved))
@@ -240,13 +242,13 @@ check('T10 first socket sits half an inch below the HEADER',
       moved and abs(moved[-1][1] - (-0.5 - 0.0395)) < 0.001, repr(moved))
 
 moved[:] = []
-m10.place_socket(socket, device_box, -1, 0, 1.0, 1.0)
+m10.place_socket(socket, device_box, -1, 0, 1.0, 1.0, None)
 check('T10 left socket lands on the left edge',
       moved and abs(moved[-1][0] - (-1.5 - -0.0665)) < 0.001, repr(moved))
 
 moved[:] = []
 check('T10 missing bounds is refused, not guessed',
-      m10.place_socket(socket, None, 1, 0, 1.0, 1.0) is False and moved == [])
+      m10.place_socket(socket, None, 1, 0, 1.0, 1.0, None) is False and moved == [])
 
 # ── T11: the stray-rectangle warning is gone ────────────────────────────────
 # It counted every rectangle in the document, so a real drawing's own
@@ -282,7 +284,7 @@ check('T12 body measured in the local frame',
 check('T12 sockets excluded from the body measurement',
       measured[2] == 1.5, repr(measured))
 
-m12.place_socket(socket12, measured, -1, 0, 1.0, 1.0)
+m12.place_socket(socket12, measured, -1, 0, 1.0, 1.0, None)
 check('T12 left socket moves to the LOCAL left edge',
       moved12 and abs(moved12[-1][0] - (-1.5 - -0.0665)) < 0.001, repr(moved12))
 check('T12 vertical measured from the header baseline',
@@ -290,16 +292,16 @@ check('T12 vertical measured from the header baseline',
 
 # The device's document position must not influence placement at all.
 moved12[:] = []
-m12.place_socket(socket12, measured, -1, 0, 1.0, 1.0)
+m12.place_socket(socket12, measured, -1, 0, 1.0, 1.0, None)
 first = moved12[-1]
 local[id(body)] = (-1.5, 1.4, 1.5, 0.0)      # same body, device moved elsewhere
 moved12[:] = []
-m12.place_socket(socket12, m12.body_bounds(group), -1, 0, 1.0, 1.0)
+m12.place_socket(socket12, m12.body_bounds(group), -1, 0, 1.0, 1.0, None)
 check('T12 placement is independent of where the device sits',
       moved12[-1] == first, '%r vs %r' % (moved12[-1], first))
 
 check('T12 no body -> refused, not guessed',
-      m12.place_socket(socket12, None, 1, 0, 1.0, 1.0) is False)
+      m12.place_socket(socket12, None, 1, 0, 1.0, 1.0, None) is False)
 
 
 # ── T13: the house spacing convention ───────────────────────────────────────
@@ -325,7 +327,7 @@ tall_body = (-1.5, -6.0, 1.5, 1.4)
 for body in (short_body, tall_body):
     moved13[:] = []
     for i in range(3):
-        m13.place_socket(sk, body, 1, i, 1.0, 1.0)
+        m13.place_socket(sk, body, 1, i, 1.0, 1.0, None)
     gaps = [round(moved13[i] - moved13[i + 1], 4) for i in range(len(moved13) - 1)]
     check('T13 pitch holds on a {} block'.format(
         'short' if body is short_body else 'tall'),
@@ -401,11 +403,15 @@ check('T16 forces absolute coordinates', made16['absolute'], repr(made16['absolu
 check('T16 borrows and returns the drawing attributes',
       made16['attrs'] == ['push', 'pop'], repr(made16['attrs']))
 
-# Spacing must come from the active layer's scale, not a default.
+# Spacing comes from the schematic grid, which is already in drawing units,
+# so the layer scale does not multiply it. Scale only matters for the inch
+# fallback used when no grid can be read.
 drops16 = [dy for dx, dy in made16['moves']]
 gaps16 = [round(drops16[i] - drops16[i + 1], 4) for i in range(2)]
-check('T16 pitch doubled by the 1:2 layer scale',
-      gaps16 == [0.5, 0.5], repr(gaps16))
+check('T16 pitch is one grid unit, independent of layer scale',
+      gaps16 == [0.25, 0.25], repr(gaps16))
+check('T16 scale still applies to the inch fallback',
+      m16.socket_drop(1, 1.0, 2.0, None) - m16.socket_drop(0, 1.0, 2.0, None) == 0.5)
 
 
 # ── T17: units are not guessed out of GetUnits ──────────────────────────────
@@ -446,7 +452,7 @@ vs18.HMove = lambda h, dx, dy: moved18.append(round(dy, 4))
 vs18.GetBBox = lambda h: (-0.13, 0.1, 0.13, -0.1)     # socket centred on origin
 sk18 = Obj('Socket', {})
 for i in range(3):
-    m18.place_socket(sk18, body18, 1, i, 1.0, 1.0)
+    m18.place_socket(sk18, body18, 1, i, 1.0, 1.0, None)
 check('T18 first socket half an inch below the header',
       abs(moved18[0] - -0.5) < 0.001, repr(moved18))
 check('T18 second a quarter inch below that',
@@ -459,7 +465,7 @@ check('T18 none sit inside the header',
 # A taller header must not move the stack: the baseline is the origin.
 tall_header = (-1.5, -1.0, 1.5, 2.0)
 moved18[:] = []
-m18.place_socket(sk18, tall_header, 1, 0, 1.0, 1.0)
+m18.place_socket(sk18, tall_header, 1, 0, 1.0, 1.0, None)
 check('T18 header height does not shift the stack',
       abs(moved18[0] - -0.5) < 0.001, repr(moved18))
 
@@ -578,5 +584,55 @@ check('T23 the last socket clears the bottom edge',
       last_drop < height, '%r vs %r' % (last_drop, height))
 check('T23 by the stated margin',
       abs((height - last_drop) - m23.SOCKET_BOTTOM_MARGIN_IN) < 1e-9)
+
+
+# ── T24: layout comes from ConnectCAD's grid, not hard-coded inches ─────────
+# ConnectCAD's own rule is one grid unit per socket, starting (top space + 1)
+# units down. On a 0.25" grid that IS the 0.25" pitch and 0.5" first drop these
+# drawings use -- so deriving it keeps the convention and survives a drawing
+# gridded differently.
+m24, vs24 = load(Doc([[dev('x')]]))
+
+vs24.GetObject = lambda n: 'REC' if n == 'ConnectCAD Settings...' else None
+vs24.GetRField = lambda h, r, f: {'SchematicsGridX': '0.25',
+                                  'SchematicsGridY': '0.25'}.get(f, '')
+gx, gy, note = m24.schematic_grid()
+check('T24 grid read from the ConnectCAD settings record',
+      (gx, gy) == (0.25, 0.25), repr((gx, gy, note)))
+check('T24 and the source is named', 'ConnectCAD Settings' in note, repr(note))
+
+check('T24 first socket is two grid units down',
+      m24.socket_drop(0, 1.0, 1.0, 0.25) == 0.5, repr(m24.socket_drop(0, 1.0, 1.0, 0.25)))
+check('T24 pitch is one grid unit',
+      abs(m24.socket_drop(1, 1.0, 1.0, 0.25) - 0.75) < 1e-9)
+check('T24 a half-inch grid doubles both',
+      m24.socket_drop(0, 1.0, 1.0, 0.5) == 1.0
+      and m24.socket_drop(1, 1.0, 1.0, 0.5) == 1.5)
+
+# Height in grid rows: (top+1) + sockets + bottom.
+three = [('skt_R', 'OUT %d' % i, 'OUT', 1) for i in range(3)]
+check('T24 height is (top+1 + n + bottom) grid rows',
+      abs(m24.body_height_for(three, 1.0, 1.0, 0.25) - (2 + 3 + 0) * 0.25) < 1e-9,
+      repr(m24.body_height_for(three, 1.0, 1.0, 0.25)))
+check('T24 minimum width is 6 grid spaces',
+      m24.body_min_width(0.25) == 1.5, repr(m24.body_min_width(0.25)))
+
+# Falls back to the document grid preferences, then to a stated default.
+vs24.GetObject = lambda n: None
+vs24.GetPrefReal = lambda sel: {78: 0.5, 79: 0.5}.get(sel, 0)
+gx, gy, note = m24.schematic_grid()
+check('T24 falls back to grid preferences 78/79',
+      (gx, gy) == (0.5, 0.5) and '78/79' in note, repr((gx, gy, note)))
+
+def no_pref(sel):
+    raise RuntimeError('unavailable')
+vs24.GetPrefReal = no_pref
+gx, gy, note = m24.schematic_grid()
+check('T24 an unreadable grid is stated, not silently assumed',
+      gx == m24.GRID_FALLBACK and 'unreadable' in note, repr(note))
+
+# Without a grid it still works, on the inch constants.
+check('T24 inch fallback preserved when no grid is known',
+      m24.socket_drop(0, 1.0, 1.0, None) == 0.5)
 
 R.report_and_exit()
