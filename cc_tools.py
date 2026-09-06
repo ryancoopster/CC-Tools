@@ -4198,37 +4198,91 @@ def job_path():
     return os.path.join(BASE_FOLDER, JOB_FILE)
 
 
+def dialog_path(result):
+    """The path out of a file-dialog result.
+
+    VectorScript VAR parameters come back as Python return values, and the
+    shape varies by routine and build: GetFileN returns (BOOLEAN, STRING),
+    GetFile returns a lone STRING that some builds still wrap in a tuple. The
+    last string in the result is the path in every one of those shapes."""
+    if isinstance(result, (tuple, list)):
+        for item in reversed(result):
+            if isinstance(item, str):
+                return item.strip()
+        return ''
+    return result.strip() if isinstance(result, str) else ''
+
+
+def default_job_folder():
+    """Where the file dialog should open.
+
+    Claude hands the job over as a download, so the browser's folder is the
+    likeliest place it is sitting."""
+    downloads = os.path.expanduser('~/Downloads')
+    if os.path.isdir(downloads):
+        return downloads
+    return BASE_FOLDER if os.path.isdir(BASE_FOLDER) else ''
+
+
 def pick_job_file():
     """Ask for the job file with a Finder dialog. Returns (path, note).
 
-    The job now arrives as a download -- Claude hands over a file rather than
-    text to save by hand -- so it lives wherever the browser put it and the
-    plug-in has to be pointed at it.
+    GetFileN is the GENERAL Open dialog:
+        ok, path = vs.GetFileN(title, defaultFolder, mask)
+    An empty mask accepts any file type. Vectorworks' own Marionette "Pick
+    File" node calls it exactly that way (Libraries/Defaults/Marionette/File
+    IO/Pick File.py), which is where the signature is confirmed from.
 
-    vs.GetFile is the standard Open dialog. VectorScript declares it
-    PROCEDURE GetFile(VAR fileName:STRING), so Python gets the path back as the
-    return value; some builds wrap a lone VAR parameter in a tuple, hence the
-    unwrap. There is no routine for restricting the dialog to a file type, so
-    the extension is checked after the fact instead."""
+    It is registered by VS Shared Library.vwlibrary rather than by the main
+    application binary, so it does NOT appear in the routine-name table inside
+    the Vectorworks executable. Enumerating that table alone says the routine
+    does not exist, which is how this code first ended up on GetFile.
+
+    GetFile is the SCRIPT open dialog. Its file-type popup is hard-limited to
+    *.txt, *.vss, *.xxt, *.vs, *.py, *.pyc, *.mpc with no "All Files" entry, so
+    it CANNOT select a .json -- confirmed against the running application. It
+    stays only as a fallback: a job saved as .txt still reads fine, because
+    nothing here cares about the extension, only the contents."""
+    start = default_job_folder()
+
+    chooser = getattr(vs, 'GetFileN', None)
+    if chooser is not None:
+        try:
+            path = dialog_path(chooser('Choose the job file', start, ''))
+        except Exception as err:
+            return None, 'The file dialog failed: {}'.format(err)
+        return validate_job_path(path)
+
     chooser = getattr(vs, 'GetFile', None)
-    if chooser is None:
-        fallback = job_path()
-        if os.path.exists(fallback):
-            return fallback, fallback
-        return None, ('This Vectorworks has no file dialog, and there is no\n'
-                      '{} to fall back on.'.format(fallback))
-    try:
-        result = chooser()
-    except Exception as err:
-        return None, 'The file dialog failed: {}'.format(err)
-    if isinstance(result, (tuple, list)):
-        result = next((item for item in reversed(result)
-                       if isinstance(item, str)), '')
-    path = (result or '').strip()
+    if chooser is not None:
+        try:
+            path = dialog_path(chooser())
+        except Exception as err:
+            return None, 'The file dialog failed: {}'.format(err)
+        if not path:
+            return None, None
+        # This dialog cannot show a .json at all, so a cancel here is more
+        # likely "the file I wanted was not listed" than a change of mind.
+        found, note = validate_job_path(path)
+        if found:
+            return found, note
+        return None, note
+
+    fallback = job_path()
+    if os.path.exists(fallback):
+        return fallback, fallback
+    return None, ('This Vectorworks offers no file dialog, and there is no\n'
+                  '{}\nto fall back on.'.format(fallback))
+
+
+def validate_job_path(path):
+    """Check a chosen path before anything tries to read it."""
     if not path:
         return None, None                      # cancelled; say nothing
     if not os.path.exists(path):
         return None, 'That file no longer exists:\n{}'.format(path)
+    if os.path.isdir(path):
+        return None, 'That is a folder, not a job file:\n{}'.format(path)
     return path, path
 
 

@@ -257,12 +257,21 @@ def build_vs(doc, selected=()):
     def GetItemText(dlg, item):
         return state['text'].get(item, '')
 
-    # The Open dialog. Tests set v.file_choice to whatever GetFile should
-    # hand back -- '' stands for the user cancelling.
+    # The general Open dialog, as Vectorworks' own Marionette node calls it:
+    # ok, path = vs.GetFileN(title, defaultFolder, mask). Tests set
+    # v.file_choice to what it should hand back; '' stands for a cancel.
+    def GetFileN(title, folder, mask):
+        v.dialog_calls.append(('GetFileN', title, folder, mask))
+        return v.file_choice
+
+    # The SCRIPT open dialog, kept as a fallback. Tests delete this attribute
+    # or v.GetFileN to simulate a build that lacks one of them.
     def GetFile():
+        v.dialog_calls.append(('GetFile',))
         return v.file_choice
 
     v.file_choice = ''
+    v.dialog_calls = []
     for name, fn in list(locals().items()):
         if callable(fn) and name[0].isupper():
             setattr(v, name, fn)

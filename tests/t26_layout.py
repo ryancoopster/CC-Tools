@@ -145,28 +145,57 @@ check('T6 the good one still aligns',
                               if d['name'] == 'C'][0], 'LAN_IN 1')) < 1e-9)
 
 # ── T7: the file picker ────────────────────────────────────────────────────
+# GetFileN is the general Open dialog and MUST be preferred: GetFile is the
+# script dialog, whose type popup cannot show a .json at all.
 os.makedirs(m.BASE_FOLDER, exist_ok=True)
 chosen = os.path.join(m.BASE_FOLDER, 'downloaded job.json')
 with open(chosen, 'w', encoding='utf-8') as f:
     json.dump({'devices': [SWITCH], 'circuits': []}, f)
 
-vs.file_choice = chosen
-path, note = m.pick_job_file()
-check('T7 picked file returned', path == chosen, repr((path, note)))
+vs.file_choice = (True, chosen)
+vs.dialog_calls = []
+path, _note = m.pick_job_file()
+check('T7 GetFileN preferred over GetFile',
+      [c[0] for c in vs.dialog_calls] == ['GetFileN'], repr(vs.dialog_calls))
+check('T7 picked file returned', path == chosen, repr(path))
+check('T7 mask is empty, so any file type shows',
+      vs.dialog_calls[0][3] == '', repr(vs.dialog_calls))
 
-vs.file_choice = ''
+vs.file_choice = (False, '')
 path, note = m.pick_job_file()
 check('T7 cancel is silent', path is None and note is None, repr((path, note)))
 
-# Some builds wrap a lone VAR parameter in a tuple.
-vs.file_choice = (True, chosen)
-path, _note = m.pick_job_file()
-check('T7 tuple return unwrapped', path == chosen, repr(path))
-
-vs.file_choice = os.path.join(m.BASE_FOLDER, 'not there.json')
+vs.file_choice = (True, os.path.join(m.BASE_FOLDER, 'not there.json'))
 path, note = m.pick_job_file()
 check('T7 missing file explained',
       path is None and note and 'no longer exists' in note, repr(note))
+
+vs.file_choice = (True, m.BASE_FOLDER)
+path, note = m.pick_job_file()
+check('T7 a folder is rejected',
+      path is None and note and 'not a job file' in note, repr(note))
+
+# A build without GetFileN falls back to the script dialog, which still reads
+# a job saved as .txt.
+saved = vs.GetFileN
+del vs.GetFileN
+txt = os.path.join(m.BASE_FOLDER, 'downloaded job.txt')
+with open(txt, 'w', encoding='utf-8') as f:
+    json.dump({'devices': [SWITCH], 'circuits': []}, f)
+vs.file_choice = txt
+vs.dialog_calls = []
+path, _note = m.pick_job_file()
+check('T7 falls back to GetFile when GetFileN is absent',
+      path == txt and [c[0] for c in vs.dialog_calls] == ['GetFile'],
+      repr((path, vs.dialog_calls)))
+vs.GetFileN = saved
+
+# A lone VAR is wrapped in a tuple by some builds; GetFileN returns a pair.
+for shape, label in ((chosen, 'bare string'), ((True, chosen), 'pair'),
+                     ([chosen], 'list')):
+    vs.file_choice = shape
+    check('T7 unwraps a %s result' % label, m.pick_job_file()[0] == chosen,
+          repr(shape))
 
 # ── T8: read_job honours the picked path, whatever it is called ────────────
 job, problems = m.read_job(chosen)
