@@ -545,4 +545,38 @@ check('T22 the body/header width relationship is reported',
       'header width' in (log22 or '') or 'body widened' in (log22 or ''),
       (log22 or '')[:500])
 
+
+# ── T23: the body is sized to hold its sockets ──────────────────────────────
+# Sockets hang from the header on a fixed pitch, so a body drawn to an
+# arbitrary height leaves the last one sitting on its edge or half outside.
+m23, vs23 = load(Doc([[dev('x')]]))
+right = [('skt_R', 'OUT %d' % i, 'OUT', 1) for i in range(1, 4)]
+
+# 3 sockets: 0.5 to the first, 0.25 x 2 between, 0.5 clear below = 1.5
+check('T23 three sockets need 1.5 inches',
+      abs(m23.body_height_for(right, 1.0, 1.0) - 1.5) < 1e-9,
+      repr(m23.body_height_for(right, 1.0, 1.0)))
+check('T23 one socket needs 1.0',
+      abs(m23.body_height_for(right[:1], 1.0, 1.0) - 1.0) < 1e-9)
+check('T23 eight sockets need 2.75',
+      abs(m23.body_height_for([('skt_R', 'x', 'OUT', 1)] * 8, 1.0, 1.0) - 2.75) < 1e-9,
+      repr(m23.body_height_for([('skt_R', 'x', 'OUT', 1)] * 8, 1.0, 1.0)))
+
+# Left and right are independent stacks, so the taller side decides.
+mixed = right + [('skt_L', 'IN 1', 'IN', -1)]
+check('T23 the deeper side decides the height',
+      abs(m23.body_height_for(mixed, 1.0, 1.0) - 1.5) < 1e-9,
+      repr(m23.body_height_for(mixed, 1.0, 1.0)))
+
+check('T23 scales with units and layer scale',
+      abs(m23.body_height_for(right, 1.0, 2.0) - 3.0) < 1e-9)
+
+# The last socket must land inside the body, not on its edge.
+height = m23.body_height_for(right, 1.0, 1.0)
+last_drop = m23.socket_drop(2, 1.0, 1.0)
+check('T23 the last socket clears the bottom edge',
+      last_drop < height, '%r vs %r' % (last_drop, height))
+check('T23 by the stated margin',
+      abs((height - last_drop) - m23.SOCKET_BOTTOM_MARGIN_IN) < 1e-9)
+
 R.report_and_exit()

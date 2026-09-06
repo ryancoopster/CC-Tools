@@ -9,6 +9,15 @@ and every socket after it is **0.25" below the last**, per side. Sockets stack
 from the top on a fixed pitch rather than spreading across the block's height,
 so a tall device keeps the same spacing as a short one.
 
+The block is **sized to its sockets**: 0.5" to the first, 0.25" between, and
+0.5" clear below the last. That bottom margin mirrors the top and is a guess —
+worth measuring against a real drawing.
+
+The body is also widened to the header, which is a fixed-width symbol
+(3.0 units for `dev_label_generic`). Other label symbols may differ, so it is
+measured rather than assumed — which ties into the label-symbol preference
+below.
+
 Sockets hang from the **header baseline** — local `y = 0`, where ConnectCAD's
 name/make header meets the rectangle it was given. `CC_DeviceFromShape` adds the
 header above your rectangle, so the top of the block is a header's height higher

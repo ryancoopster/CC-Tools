@@ -3042,6 +3042,11 @@ DEFAULTS_FOLDER = 14          # BuildResourceList: Defaults folder
 # bug and is not one.
 SOCKET_FIRST_DROP_IN = 0.5
 SOCKET_PITCH_IN = 0.25
+
+# Clear space below the last socket, so it sits inside the block rather than on
+# its edge. Mirrors the drop above the first one; adjust if the drawings say
+# otherwise.
+SOCKET_BOTTOM_MARGIN_IN = 0.5
 SOCKET_SYMBOLS = ['skt_R', 'skt_L', 'skt_R_loop', 'skt_L_loop']
 PROBE_PREFIX = 'CCTOOLS PROBE'
 
@@ -3087,6 +3092,12 @@ def probe_make_device(name, x, y, width, height, socket_specs, log,
     Returns (device handle or None, every socket added). The second value
     matters: a device that comes back without its sockets is a failure, and
     reporting it as anything else would defeat the point of a probe."""
+    # The rectangle becomes the body, so give it the height its sockets need
+    # before ConnectCAD turns it into a device -- growing it afterwards would
+    # move everything already placed against it.
+    height = body_height_for(socket_specs, upi, scale)
+    log.append('  info  body height   {:.3f} units for {} socket(s)'.format(
+        height, len(socket_specs)))
     try:
         vs.Rect(x - width / 2.0, y + height, x + width / 2.0, y)
         rect = vs.LNewObj()
@@ -3328,6 +3339,26 @@ def group_inventory(group, log_prefix='  '):
                 log_prefix, type_n, record or '-'))
         handle = vs.NextObj(handle)
     return out
+
+
+def body_height_for(socket_specs, upi, scale):
+    """How tall the body must be to hold its sockets.
+
+    Sockets hang from the header on a fixed pitch, so the block has to be
+    sized to the number of them rather than the other way round -- a body
+    drawn to an arbitrary height leaves the last socket sitting on its edge,
+    or half outside it.
+
+    Counted per side: left and right are independent stacks, so the taller
+    of the two decides."""
+    per_side = {}
+    for spec in socket_specs:
+        side = spec[3]
+        per_side[side] = per_side.get(side, 0) + 1
+    deepest = max(per_side.values()) if per_side else 1
+    inches = (SOCKET_FIRST_DROP_IN + (deepest - 1) * SOCKET_PITCH_IN
+              + SOCKET_BOTTOM_MARGIN_IN)
+    return inches * upi * scale
 
 
 def header_bounds(group):
