@@ -97,4 +97,23 @@ check('T7 circuit Label harvested', 'spare' in f7, repr(sorted(f7)))
 check('T7 circuit Signal dropdown ignored', 'avb' not in f7, repr(sorted(f7)))
 check('T7 circuit endpoint cache ignored', 'swtch' not in f7, repr(sorted(f7)))
 
+# ── Applying the CSV is its own action, not a fallthrough ────────────────
+# ACTION_SPELL_APPLY used to fall through to the branch that fixes every
+# suspect automatically. Picking "apply my hand-edited sheet" silently ran
+# "rewrite everything you think is wrong" -- a different and far more
+# destructive operation, on the field that is the link key.
+import inspect, re
+body = inspect.getsource(m.tool_spellcheck)
+check('APPLY is handled before the catch-all else',
+      body.index('ACTION_SPELL_APPLY') < body.index('ACTION_SPELL_REVIEW'),
+      'APPLY must be tested first or it falls through')
+check('APPLY reads the CSV', 'load_vocabulary_csv()' in body, body[:0])
+check('the CSV reader is no longer orphaned',
+      'load_vocabulary_csv' in body)
+
+# Every action offered in the dialog must be handled somewhere.
+for action in ('ACTION_SPELL_LIST', 'ACTION_SPELL_VOCAB', 'ACTION_SPELL_EXPORT',
+               'ACTION_SPELL_REVIEW', 'ACTION_SPELL_APPLY'):
+    check('%s is handled' % action, action in body, body[:0])
+
 R.report_and_exit()

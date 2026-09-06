@@ -2940,6 +2940,23 @@ def tool_spellcheck():
         path = export_spelling_csv(suspects)
         return 'done', '{} suspect(s) listed in\n{}'.format(len(suspects), path)
 
+    if settings['action'] == ACTION_SPELL_APPLY:
+        # This has to be handled explicitly. Falling through to the else below
+        # would silently run "fix every suspect without asking" instead -- a
+        # very different and far more destructive operation than applying a
+        # sheet the user edited by hand.
+        token_map, phrase_map, error = load_vocabulary_csv()
+        if error:
+            vs.AlrtDialog('Cannot apply replacements:\n\n{}'.format(error))
+            return 'stopped', None
+        if not token_map and not phrase_map:
+            vs.AlrtDialog('No replacements found in {}.\n\nType them into the '
+                          '"Replace with" column and save the file.'.format(
+                              VOCAB_FILE))
+            return 'done', 'nothing to apply from {}'.format(VOCAB_FILE)
+        return apply_corrections(handles, token_map, phrase_map, [], settings,
+                                 source=VOCAB_FILE)
+
     if settings['action'] == ACTION_SPELL_REVIEW:
         accepted, newly_ignored, aborted = review_suspects(suspects)
         if aborted:
