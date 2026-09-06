@@ -188,22 +188,19 @@ still regions; the drafter simply did not leave space between them. The
 `section_gap_inches` preference exists so generated work can, or need not.
 
 
-## The Claude API client is unreachable
+## The Claude API client — deleted
 
-`claude_request`, `load_claude_config`, `usage_totals` and `format_usage` --
-roughly 330 lines from "CLAUDE API CLIENT" onward -- are defined and never
-called. No tool is wired to them, so none of it has ever run: not the
-first-run key prompt, not the usage log, not the cost accounting.
+`claude_request`, `load_claude_config`, `usage_totals`, `format_usage` and the
+first-run key prompt were defined and never called. No tool was ever wired to
+them, so none of it had run: not the key handling, not the usage log, not the
+cost accounting.
 
-It was written before the copy-paste route existed, and the copy-paste route
-turned out to be the better answer for this audience -- no key, no account, no
-billing. So the honest options are:
+Deleted 2026-09-06, 333 lines, on Ryan's call. It predated the copy-paste route
+and the copy-paste route turned out to be the better answer for this audience —
+no key, no account, no billing. Untested network code in a plug-in that edits
+live drawings is a liability, not an asset, and git remembers it.
 
-1. **Delete it.** The workflow people will actually use does not need it, and
-   330 lines of untested network code in a plug-in that edits live drawings is
-   a liability, not an asset. Git remembers it.
-2. **Wire it up and test it**, as a tool for the PDF-redraw case, which is the
-   one thing the copy-paste route genuinely cannot do -- attaching a PDF to a
-   chat works, but nothing brings the reply back automatically.
-
-Not decided. Do not leave it as it is.
+**If it is ever wanted back**, the case for it is the PDF-redraw path: attaching
+a PDF to a chat works, but nothing brings the reply back automatically. That is
+the one thing copy-paste genuinely cannot do. Recover it from history rather
+than rewriting it — but test it before trusting it, because it never was.
