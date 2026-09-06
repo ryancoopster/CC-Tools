@@ -20,26 +20,33 @@ format and is **not reachable from script**, so the stock counts
 (min width 6, top 1, bottom 0, group gap 0) are constants here — a drawing
 whose Device Preferences differ needs them changed to match.
 
-## Build devices from symbols instead of by hand
+## Build devices from symbols — done
 
-The current path — bare device from `CC_DeviceFromShape`, sockets duplicated in,
-positions computed — reimplements what ConnectCAD's Device Builder does.
+A ConnectCAD **device symbol** is a symbol definition holding one fully-built
+Device with its sockets already in the profile group. `place_device_from_symbol`
+is a port of `Utilities::PlaceObjectFromSymbol`: find the Device inside the
+definition, duplicate it onto the layer, copy across records the duplicate
+lacks, reset, position.
 
-The better route is ConnectCAD's own: a **device symbol** is a symbol definition
-containing one fully-built Device PIO with its sockets already in the profile
-group. `Utilities::PlaceObjectFromSymbol` places one by finding the Device PIO
-inside the symbol definition, duplicating it onto the layer, copying any records
-the duplicate lacks, resetting and positioning it — all ordinary VectorScript.
+Stamping one computes **no layout at all** — no grid, no pitch, no header
+baseline — and matches house style by construction, because the symbol came from
+a device somebody drew by hand.
 
-Workflow: build one device correctly by hand, "Save as Symbol…" from its Object
-Info palette, then stamp copies. This removes every geometry rule above from the
-generator's responsibility, and makes generated devices match house style
-exactly because they *are* the house device.
+`device_symbol_catalogue()` lists every device symbol in the document with the
+make and model of the Device inside it, and `find_device_symbol(make, model)`
+matches forgivingly on case, spaces, hyphens and underscores, since the same
+product is written `Galaxy 408`, `GALAXY-408` and `Galaxy_408` across a set.
 
-Not yet implemented. Worth doing before the generator, since it decides how much
-layout code the generator needs at all.
+**To make a symbol:** build a device the way you want it, then *Save as Symbol…*
+in its Object Info palette.
 
-## Drawing preferences## Drawing preferences
+Still to do:
+- Search ConnectCAD's own device-symbol libraries, not just the open document.
+- Fall back to the device database (`ConnectCAD Devices DB.txt`, ~17k rows) for
+  the socket list when no symbol exists, so a hand-built device still gets its
+  real connectors rather than invented ones.
+
+## Drawing preferences## Drawing preferences## Drawing preferences
 
 Generated objects currently take whatever ConnectCAD defaults to. Two choices
 should be the user's, not the tool's:

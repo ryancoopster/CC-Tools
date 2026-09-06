@@ -2334,6 +2334,202 @@ def write_spelling_report(accepted, edits, sync_edits, ignored,
     return '\n'.join(lines)
 
 
+# ─── Device symbols: ConnectCAD's own way of stamping out devices ────────────
+#
+# A ConnectCAD "device symbol" is a symbol definition holding one fully-built
+# Device plug-in object, sockets already in its profile group. Placing one is
+# how the Device tool's Standard Insertion works, and it is a faithful port of
+# Utilities::PlaceObjectFromSymbol: find the Device inside the definition,
+# duplicate it onto the layer, copy across any records the duplicate lacks,
+# reset, position.
+#
+# This is worth far more than convenience. A device stamped from a symbol needs
+# no layout at all -- no socket pitch, no body sizing, no header baseline --
+# because the symbol already IS a correct device. And it matches house style by
+# construction, since the symbol came from a device somebody drew by hand.
+#
+# Make one with: build a device the way you want it, then "Save as Symbol..."
+# in its Object Info palette.
+
+DEVICE_RECORD = 'Device'
+
+
+def device_pio_in_symbol(symdef):
+    """The Device plug-in object inside a symbol definition, or None."""
+    if not symdef:
+        return None
+    try:
+        handle = vs.FInSymDef(symdef)
+    except Exception:
+        return None
+    guard = 0
+    while handle and guard < 200:
+        guard += 1
+        try:
+            if vs.GetTypeN(handle) == TYPE_PIO and classify(handle) == 'device':
+                return handle
+        except Exception:
+            pass
+        handle = vs.NextObj(handle)
+    return None
+
+
+def device_symbol_catalogue():
+    """Every device symbol available, with what it is a device OF.
+
+    Read from the symbol definitions rather than from names: ConnectCAD names
+    these `Make_Model`, but a drawing's own symbols may be named anything, and
+    what matters is the make and model on the Device inside.
+    """
+    catalogue = []
+    try:
+        list_id, count = vs.BuildResourceList(TYPE_SYMDEF, 0, '')
+    except Exception:
+        return catalogue
+
+    for index in range(1, (count or 0) + 1):
+        try:
+            name = vs.GetNameFromResourceList(list_id, index)
+            symdef = vs.GetResourceFromList(list_id, index)
+        except Exception:
+            continue
+        device = device_pio_in_symbol(symdef)
+        if not device:
+            continue
+        group = None
+        try:
+            group = vs.GetCustomObjectProfileGroup(device)
+        except Exception:
+            pass
+        sockets = 0
+        if group:
+            handle = vs.FInGroup(group)
+            guard = 0
+            while handle and guard < 200:
+                guard += 1
+                if classify(handle) == 'socket':
+                    sockets += 1
+                handle = vs.NextObj(handle)
+        catalogue.append({
+            'symbol': name,
+            'handle': symdef,
+            'make': read_field(device, 'make'),
+            'model': read_field(device, 'model'),
+            'sockets': sockets,
+        })
+    return catalogue
+
+
+def normalise_model(value):
+    """Compare makes and models forgivingly.
+
+    The same product is written 'Galaxy 408', 'GALAXY-408' and 'Galaxy_408'
+    across a drawing set, so matching has to ignore case, spaces, hyphens and
+    underscores or it will miss symbols that are plainly there.
+    """
+    out = []
+    for ch in (value or ''):
+        if ch.isalnum():
+            out.append(ch.lower())
+    return ''.join(out)
+
+
+def find_device_symbol(make, model, catalogue=None):
+    """The device symbol for this make and model, or None.
+
+    Make and model together are the identity; model alone is accepted as a
+    fallback because a drawing often carries only one product of a given name,
+    but a bare make is never enough to pick a device."""
+    if catalogue is None:
+        catalogue = device_symbol_catalogue()
+    if not model:
+        return None
+
+    want_make = normalise_model(make)
+    want_model = normalise_model(model)
+
+    for entry in catalogue:
+        if (normalise_model(entry['model']) == want_model
+                and normalise_model(entry['make']) == want_make):
+            return entry
+    for entry in catalogue:
+        if normalise_model(entry['model']) == want_model:
+            return entry
+    return None
+
+
+def copy_missing_records(source, target):
+    """Copy records the target lacks, as PlaceObjectFromSymbol does.
+
+    A device symbol can carry records attached to the definition rather than to
+    the Device inside it; without this they are lost on placement."""
+    copied = 0
+    try:
+        have = set()
+        for i in range(1, (vs.NumRecords(target) or 0) + 1):
+            record = vs.GetRecord(target, i)
+            if record:
+                have.add(vs.GetName(record))
+        for i in range(1, (vs.NumRecords(source) or 0) + 1):
+            record = vs.GetRecord(source, i)
+            if not record:
+                continue
+            name = vs.GetName(record)
+            if not name or name in have:
+                continue
+            vs.SetRecord(target, name)
+            for f in range(1, (vs.NumFields(record) or 0) + 1):
+                field = vs.GetFldName(record, f)
+                if field:
+                    vs.SetRField(target, name, field,
+                                 vs.GetRField(source, name, field))
+            copied += 1
+    except Exception:
+        pass
+    return copied
+
+
+def place_device_from_symbol(symdef, x, y, name=None, tag=None):
+    """Stamp a device out of a device symbol. Returns the handle, or None.
+
+    Port of Utilities::PlaceObjectFromSymbol. No layout is computed: the
+    symbol's Device already has its sockets placed, so nothing here needs to
+    know about grids, pitches or header baselines."""
+    prototype = device_pio_in_symbol(symdef)
+    if not prototype:
+        return None
+    try:
+        device = vs.CreateDuplicateObject(prototype, vs.ActLayer())
+    except Exception:
+        return None
+    if not device:
+        return None
+
+    copy_missing_records(symdef, device)
+
+    # Move it into place from wherever the duplicate landed. (x, y) puts the
+    # device's TOP EDGE at y and centres it on x, so a row of devices lines up
+    # along its tops however tall each one is.
+    box = bounds(device)
+    if box:
+        centre_x = (box[0] + box[2]) / 2.0
+        try:
+            vs.HMove(device, x - centre_x, y - box[3])
+        except Exception:
+            pass
+
+    # Names are link keys, so set them last and reset once afterwards.
+    if name is not None:
+        write_field(device, resolve_field(device, DEVICE_NAME_FIELDS) or 'name', name)
+    if tag is not None:
+        write_field(device, resolve_field(device, DEVICE_TAG_FIELDS) or 'tag', tag)
+    try:
+        vs.ResetObject(device)
+    except Exception:
+        pass
+    return device
+
+
 # ─── In-dialog vocabulary review ─────────────────────────────────────────────
 #
 # A list browser shows every term; a separate edit field takes the replacement.
@@ -3693,7 +3889,50 @@ def tool_creation_probe():
     _layer, scale, upi, grid = active_layer_context(log)
     log.append('')
 
-    log.append('1. Device with sockets (SHORT name)')
+    # A symbol beats hand-building: it already has its sockets, so none of the
+    # grid or pitch rules below are consulted at all.
+    catalogue = device_symbol_catalogue()
+    log.append('Device symbols available: {}'.format(len(catalogue)))
+    for entry in catalogue[:12]:
+        log.append('  {:<28} {} {}  ({} socket(s))'.format(
+            entry['symbol'][:28], entry['make'], entry['model'],
+            entry['sockets']))
+    if len(catalogue) > 12:
+        log.append('  ... and {} more'.format(len(catalogue) - 12))
+    if not catalogue:
+        log.append('  none in this document, so devices are built by hand.')
+        log.append('  To make one: build a device as you want it, then use')
+        log.append('  "Save as Symbol..." in its Object Info palette.')
+    log.append('')
+
+    match = find_device_symbol('CC Tools', 'Probe', catalogue)
+    if match:
+        log.append('0. Stamping from the symbol {!r} -- no layout needed'.format(
+            match['symbol']))
+        stamped = place_device_from_symbol(
+            match['handle'], 12.0, 0, PROBE_PREFIX + ' STAMPED',
+            PROBE_PREFIX + ' STAMPED')
+        if stamped:
+            group = None
+            try:
+                group = vs.GetCustomObjectProfileGroup(stamped)
+            except Exception:
+                pass
+            placed = 0
+            handle = vs.FInGroup(group) if group else None
+            guard = 0
+            while handle and guard < 200:
+                guard += 1
+                if classify(handle) == 'socket':
+                    placed += 1
+                handle = vs.NextObj(handle)
+            log.append('  ok    stamped with {} socket(s) already placed'.format(
+                placed))
+        else:
+            log.append('  FAIL  could not stamp from the symbol')
+        log.append('')
+
+    log.append('1. Device with sockets (SHORT name, built by hand)')
     first, first_sockets = probe_make_device(
         PROBE_PREFIX + ' A', 0, 0, 2.0, 1.0,
         [('skt_R', 'OUT 1', 'OUT', 1),
@@ -3720,6 +3959,15 @@ def tool_creation_probe():
 
     # Every step has to have worked. Wiring alone is not enough: a device
     # that came back without its sockets is a failure however the circuit read.
+    if catalogue:
+        log.append('')
+        log.append('NOTE: {} device symbol(s) available. Stamping from a symbol '
+                   'needs'.format(len(catalogue)))
+        log.append('no layout at all and matches house style exactly, so the '
+                   'hand-built')
+        log.append('path above is only for devices that have no symbol yet.')
+        log.append('')
+
     devices_ok = bool(first and second)
     sockets_ok = first_sockets and second_sockets
     if devices_ok and sockets_ok and wired:
