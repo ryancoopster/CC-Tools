@@ -6,7 +6,9 @@ ConnectCAD ties most of its objects together **by name string**. Rename a schema
 
 ## What it does
 
-Running **CC Tools** opens a launcher where you tick one or more tools. Nothing is ticked by default — these edit a live drawing, so choosing is deliberate. Ticked tools always run in the order below.
+Running **CC Tools** opens a launcher where you tick one or more tools. Nothing is ticked by default — these edit a live drawing, so choosing is deliberate. Ticked tools always run in the order below, whichever order you tick them in.
+
+The launcher is split in two: the tools used while drafting, and the ones used when setting a drawing up or working out why something went wrong.
 
 | Tool | What it does |
 |---|---|
@@ -14,11 +16,14 @@ Running **CC Tools** opens a launcher where you tick one or more tools. Nothing 
 | **Normalise Names** | UPPERCASE and/or trim names and display tags, keeping all linked objects in sync. |
 | **Match Names and Display Tags** | Finds objects whose Name and Display Tag disagree and lets you choose which one wins — in bulk, or one at a time. |
 | **Spell Check** | Finds likely typos in free-text fields, and doubles as a reviewable find-and-replace across every ConnectCAD object. |
-| **Export Reference Schematic** | Read-only. Writes a signal-flow layer out as JSON — devices, their sockets, and the real circuit wiring — for use as a worked example. |
-| **Export prompt for Claude** | Read-only. Writes a profile of how this drawing is built, to hand Claude so new work matches it. |
 | **Draw schematic job** | Opens a file dialog, then builds the devices and wiring from the job file Claude gave you. |
+| **Preferences** | Column spacing, row spacing, gap between sections, circuit line mode, device label symbol. |
+| **Export prompt for Claude** | Read-only. Writes a profile of how this drawing is built, to hand Claude so new work matches it. |
+| **Export Reference Schematic** | Read-only. Writes a signal-flow layer out as JSON — devices, their positions and sockets, and the real circuit wiring — for use as a worked example. |
 
-Normalise runs before Match on purpose: uppercasing and trimming collapses every case-only and whitespace-only mismatch (`amp1` vs `AMP1`), so Match only asks about pairs that genuinely differ. Spell Check runs last, once every name has settled.
+Normalise runs before Match on purpose: uppercasing and trimming collapses every case-only and whitespace-only mismatch (`amp1` vs `AMP1`), so Match only asks about pairs that genuinely differ. Spell Check runs last, once every name has settled. Preferences run first, so ticking them alongside **Draw schematic job** draws with the settings you just saved.
+
+Preferences are kept in `~/Documents/CC Tools/preferences.json`, which you can edit directly. Spacing is in printed inches and is scaled by the layer, so a job drawn on a 1:2 layer keeps its proportions.
 
 ### Spell Check, and why it isn't just a dictionary
 

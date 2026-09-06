@@ -30,6 +30,38 @@ wiring. Attach that alongside `JOB-SPEC.md` at step 1.
 Without it Claude will still produce a valid drawing; it just won't know your
 house vocabulary.
 
+## Sections
+
+These drawings divide **one** design layer into horizontal bands by signal type
+and location — analog in one band, power in another, speakers in another — with
+sheet viewports cropping each band onto its own drawing. Jobs describe that
+directly: every device names a `section`, and the bands are stacked down the
+layer in the order the job lists them, separated by the gap set in
+**Preferences**.
+
+Two things follow from bands being separate regions of the drawing, and the
+tool checks both rather than drawing something that cannot work:
+
+- **A circuit cannot cross sections.** Its two ends would be nowhere near each
+  other, so it could never wire.
+- **A device that belongs in two sections is drawn twice.** A speaker appears
+  in the speaker section carrying its network feed, and again in the power
+  section carrying its mains. Both blocks keep the same **name** — that is what
+  makes them the same ConnectCAD device — and each gets its own `id`, so a
+  circuit can say which one it means.
+
+That second point is why device names legitimately repeat in a job, and why
+circuits reference ids rather than names.
+
+## Cable names
+
+Each circuit carries a `cable` — the short human-readable name drawn along the
+middle of the line. Claude writes one per circuit; it is a design decision, not
+something derivable, and it is the label a person actually reads off the sheet.
+
+Wire **numbers** are left alone. ConnectCAD numbers wires itself, by signal
+type, and a second scheme fighting it would only make a mess.
+
 ## Layout is wiring
 
 The thing to understand, because it explains most surprises:

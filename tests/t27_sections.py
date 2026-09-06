@@ -242,4 +242,51 @@ check('T8 a circuit the job says nothing about is not touched',
 check('T8 no numbering preferences remain',
       not any('number' in k for k in m.PREF_DEFAULTS), repr(m.PREF_DEFAULTS))
 
+# ── T9: a symbol device is sized by its SYMBOL, not by the job ────────────
+# The job lists no sockets for a symbol device -- the symbol already has them
+# placed. Measuring the empty list would report a short device and let the
+# next section overlap it.
+CATALOGUE = [{'symbol': 'Meyer_TIGRA-L', 'make': 'Meyer Sound',
+              'model': 'TIGRA-L', 'sockets': 4, 'height': 9.0,
+              'handle': 'SYM1', 'folder': 'zConnectCAD db Created'}]
+
+symbol_device = {'name': 'BIG', 'make': 'Meyer Sound', 'model': 'TIGRA-L',
+                 'sockets': []}
+check('T9 symbol height used when a symbol matches',
+      m.device_height(symbol_device, 1.0, 1.0, GY, CATALOGUE) == 9.0,
+      repr(m.device_height(symbol_device, 1.0, 1.0, GY, CATALOGUE)))
+check('T9 falls back to the socket list with no catalogue',
+      m.device_height(symbol_device, 1.0, 1.0, GY, None)
+      == m.body_height_for([], 1.0, 1.0, GY))
+check('T9 a device with no matching symbol still measures its sockets',
+      m.device_height({'name': 'X', 'make': 'Nobody', 'model': 'Nothing',
+                       'sockets': [{'name': 'A', 'side': 'L'}]},
+                      1.0, 1.0, GY, CATALOGUE)
+      == m.body_height_for([('skt_L', 'A', 'IO', -1, '', '')], 1.0, 1.0, GY))
+
+# A tall symbol device must push the next section clear of it.
+job = {
+    'sections': [{'name': 'Top'}, {'name': 'Below'}],
+    'devices': [
+        {'id': 'big', 'name': 'BIG', 'make': 'Meyer Sound', 'model': 'TIGRA-L',
+         'section': 'Top', 'column': 0, 'sockets': []},
+        d('small', 'SMALL', section='Below'),
+    ],
+    'circuits': [],
+}
+gap = dict(m.PREF_DEFAULTS, section_gap_inches=1.0)
+pos, _n = m.resolve_job_positions(job, GX, GY, 1.0, 1.0, gap, CATALOGUE)
+top_bottom = m.section_extent([job['devices'][0]], pos, 1.0, 1.0, GY, CATALOGUE)[1]
+below_top = m.section_extent([job['devices'][1]], pos, 1.0, 1.0, GY, CATALOGUE)[0]
+check('T9 the section below clears a 9-unit-tall symbol device',
+      below_top < top_bottom and abs((top_bottom - below_top) - 1.0) < 1e-9,
+      'symbol bottom %s, next top %s' % (top_bottom, below_top))
+
+# Without the catalogue the same job would have overlapped, which is the bug.
+pos_blind, _n = m.resolve_job_positions(job, GX, GY, 1.0, 1.0, gap, None)
+blind_top = m.section_extent([job['devices'][1]], pos_blind, 1.0, 1.0, GY, None)[0]
+check('T9 without symbol heights the sections would have collided',
+      blind_top > top_bottom,
+      'blind next-top %s vs real symbol bottom %s' % (blind_top, top_bottom))
+
 R.report_and_exit()

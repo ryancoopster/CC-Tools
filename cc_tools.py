@@ -2439,6 +2439,16 @@ def device_symbol_catalogue(folders=None):
                     if classify(handle) == 'socket':
                         sockets += 1
                     handle = vs.NextObj(handle)
+            # The device's real height, so a section containing it can be
+            # sized. A symbol device's height comes from the symbol, not from
+            # the job's socket list -- which is usually empty for one, since
+            # the whole point of a symbol is that its sockets are already
+            # placed. Without this, sections stacked below it would overlap.
+            height = 0.0
+            box = bounds(device)
+            if box:
+                height = box[3] - box[1]
+
             catalogue.append({
                 'symbol': name,
                 'folder': folder or '(root)',
@@ -2446,6 +2456,7 @@ def device_symbol_catalogue(folders=None):
                 'make': read_field(device, 'make'),
                 'model': read_field(device, 'model'),
                 'sockets': sockets,
+                'height': height,
             })
     # A symbol that names what it is a device of is a real device; the parts
     # in the root generally do not. Sort those to the front.
@@ -4857,19 +4868,35 @@ def align_within_section(devices, positions, upi, scale, gy):
     return notes
 
 
-def section_extent(devices, positions, upi, scale, gy):
+def device_height(device, upi, scale, gy, catalogue=None):
+    """How tall this device will be once drawn.
+
+    A device matched to a SYMBOL takes the symbol's height: its sockets are
+    already placed inside it, so the job usually lists none, and measuring the
+    job's empty socket list would report a device far shorter than the one
+    actually stamped out."""
+    if catalogue:
+        match = find_device_symbol(device.get('make') or '',
+                                   device.get('model') or '', catalogue)
+        if match and match.get('height'):
+            return match['height']
+    return body_height_for(job_socket_specs(device), upi, scale, gy)
+
+
+def section_extent(devices, positions, upi, scale, gy, catalogue=None):
     """(top, bottom) of one section's devices, headers and bodies included."""
     top = None
     bottom = None
     for device in devices:
-        x, y = positions[job_device_id(device)]
-        height = body_height_for(job_socket_specs(device), upi, scale, gy)
+        _x, y = positions[job_device_id(device)]
+        height = device_height(device, upi, scale, gy, catalogue)
         top = y if top is None else max(top, y)
         bottom = (y - height) if bottom is None else min(bottom, y - height)
     return (top or 0.0), (bottom or 0.0)
 
 
-def resolve_job_positions(job, gx, gy, upi=1.0, scale=1.0, prefs=None):
+def resolve_job_positions(job, gx, gy, upi=1.0, scale=1.0, prefs=None,
+                          catalogue=None):
     """Where every device goes. Returns ({id: (x, y)}, notes).
 
     Sections are laid out as horizontal BANDS down the same design layer, which
@@ -4905,7 +4932,8 @@ def resolve_job_positions(job, gx, gy, upi=1.0, scale=1.0, prefs=None):
             continue
         notes.extend(align_within_section(devices, positions, upi, scale, gy))
 
-        top, bottom = section_extent(devices, positions, upi, scale, gy)
+        top, bottom = section_extent(devices, positions, upi, scale, gy,
+                                     catalogue)
         shift = running_top - top
         if shift:
             for device in devices:
@@ -4926,7 +4954,8 @@ def build_job_devices(job, log, upi, scale, grid):
     prefs = load_prefs()
     made = {}
 
-    positions, notes = resolve_job_positions(job, gx, gy, upi, scale, prefs)
+    positions, notes = resolve_job_positions(job, gx, gy, upi, scale, prefs,
+                                             catalogue)
     for note in notes:
         log.append('  WARN    {}'.format(note))
 
