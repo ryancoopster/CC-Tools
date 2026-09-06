@@ -171,4 +171,24 @@ for line in pairs:
         seen[name] = True
 check('T10 no dialog constant is defined twice', not clashes, repr(clashes))
 
+# ── T11: the results table is the end of a successful search ─────────────
+# Two alerts used to follow it: one confirming the selection, one from the
+# launcher restating the count. Both said what the table had just shown.
+import inspect
+
+check('T11 the results table is told where the CSV went',
+      'path' in inspect.signature(m.show_search_results).parameters,
+      repr(inspect.signature(m.show_search_results)))
+
+body = inspect.getsource(m.tool_search)
+check('T11 no alert after selecting', 'object(s) selected' not in body, body[-400:])
+check('T11 a successful search returns nothing for the launcher to report',
+      body.rstrip().endswith("return 'done', None"), body[-200:])
+
+# The alerts that remain are the paths with no table to speak for them.
+check('T11 a search with no matches still says so',
+      'No matches for' in body)
+check('T11 refusals still explain themselves',
+      'Nothing to find' in body and 'No object types were ticked' in body)
+
 R.report_and_exit()

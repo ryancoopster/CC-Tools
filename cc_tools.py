@@ -4655,8 +4655,13 @@ def ask_search():
     return chosen
 
 
-def show_search_results(hits, term, capped):
-    """List the hits. Returns True if the user asked to select them."""
+def show_search_results(hits, term, capped, path):
+    """List the hits. Returns True if the user asked to select them.
+
+    This table IS the result. Everything the run has to say -- the count, the
+    cap, where the CSV went -- belongs here, where it can be read next to the
+    matches, rather than in an alert that has to be dismissed after the table
+    has already been closed."""
     shown = hits[:SEARCH_DISPLAY_CAP]
     dlg = vs.CreateLayout('Search Results', False, 'Select in drawing', 'Close')
 
@@ -4669,7 +4674,8 @@ def show_search_results(hits, term, capped):
     vs.CreateStaticText(
         dlg, rHintTxt,
         '"Select in drawing" selects every matching object, so Fit to '
-        'Selection\nwill take you to them. A full CSV is written either way.', -1)
+        'Selection\nwill take you to them.\n\nAll {} match(es) written to:\n{}'
+        .format(len(hits), path), -1)
 
     vs.SetFirstLayoutItem(dlg, rCountTxt)
     vs.SetBelowItem(dlg, rCountTxt, rLB, 0, 0)
@@ -4729,13 +4735,13 @@ def tool_search():
     if not asked['kinds']:
         vs.AlrtDialog('No object types were ticked, so there is nothing to '
                       'search.')
-        return 'stopped', 'no object types selected'
+        return 'stopped', None
 
     term = asked['term']
     if not term and not asked['whole']:
         vs.AlrtDialog('Nothing to find.\n\nType something, or tick "Match the '
                       'whole field" to list fields that are empty.')
-        return 'stopped', 'no search term'
+        return 'stopped', None
 
     handles = collect_scope(asked['scope'])
     _walked, parents = walk_document(with_parents=True)
@@ -4744,7 +4750,7 @@ def tool_search():
 
     if not hits:
         vs.AlrtDialog('No matches for "{}".'.format(term))
-        return 'done', 'no matches for "{}"'.format(term)
+        return 'done', None
 
     rows = [['Object', 'Which one', 'Field', 'Value', 'Layer']]
     for hit in hits:
@@ -4752,14 +4758,12 @@ def tool_search():
                      hit['layer']])
     path = save_csv('search', rows)
 
-    capped = len(hits) > SEARCH_DISPLAY_CAP
-    objects = len(set(h['handle'] for h in hits))
-    if show_search_results(hits, term, capped):
-        selected = select_hits(hits)
-        vs.AlrtDialog('{} object(s) selected.\n\nFull results:\n{}'.format(
-            selected, path))
-    summary = '{} match(es) in {} object(s)\n{}'.format(len(hits), objects, path)
-    return 'done', summary
+    if show_search_results(hits, term, len(hits) > SEARCH_DISPLAY_CAP, path):
+        select_hits(hits)
+    # Nothing is returned for the launcher to report. Search is read-only and
+    # has already shown its results; a summary here would be a second dialog
+    # restating what the table just said, and a third if the run also selected.
+    return 'done', None
 
 
 # ─── Preferences dialog ──────────────────────────────────────────────────────
