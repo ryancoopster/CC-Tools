@@ -81,8 +81,23 @@ because the rules below determine those.
 2. **Look the device up properly** if it is not in that file — the
    manufacturer's real connector set — and say clearly in your reply that you
    did, and what you found. Suggest the user add it to `DEVICES.md` so the next
-   schematic comes out the same. Include the markdown table for them to paste;
-   the format is at the top of that file.
+   schematic comes out the same. Include the whole entry for them to paste:
+   the socket table AND the physical properties, which are
+
+   ```
+   - Width: 482.6 mm
+   - Height: 44.45 mm
+   - Depth: 262.89 mm
+   - Weight: 3.84 kg
+   - Power: 30 W
+   - Rack mounted: yes
+   - Rack U: 1
+   ```
+
+   Always write the unit. Rack U is the device's **size** in rack units, not
+   where it sits in a rack. **Leave out anything you could not find** — a
+   blank line is a job someone can finish, a plausible number is a wrong
+   answer nobody will catch.
 3. **Give only make and model, and omit `sockets`.** CC Tools falls back to
    ConnectCAD's shipped database of 2,734 devices. The catch: you then do not
    know the socket names, so you cannot write circuits against them — leave

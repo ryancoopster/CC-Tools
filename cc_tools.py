@@ -3122,6 +3122,29 @@ def object_class(handle):
         return ''
 
 
+# EquipItem carries a device's PHYSICAL properties -- the ones the schematic
+# object does not. Exporting them lets the curated device list be seeded from a
+# drawing rather than typed: ConnectCAD's shipped database knew only 2 of the
+# 28 devices in this drawing, so the rack layout is the better source.
+EQUIP_PHYSICAL_FIELDS = {
+    'width': 'Width', 'height': 'Height', 'depth': 'Depth',
+    'weight': 'weight', 'power': 'power',
+    'rack_width': 'width_R', 'rack_u': 'heightU', 'mount': 'mount',
+}
+
+
+def equipment_physical(handle):
+    """An equipment item's physical properties, blank ones omitted."""
+    out = {}
+    for key, field in EQUIP_PHYSICAL_FIELDS.items():
+        resolved = resolve_field(handle, [field])
+        value = read_field(handle, resolved) if resolved else ''
+        value = (value or '').strip()
+        if value and value not in ('0', '---'):
+            out[key] = value
+    return out
+
+
 def build_reference(handles):
     """The drawing as structured data: devices, their sockets, and the wiring.
 
@@ -3174,6 +3197,20 @@ def build_reference(handles):
             devices[-1]['x'] = round((box[0] + box[2]) / 2.0, 4)
             devices[-1]['y'] = round(box[3], 4)      # the top edge, as jobs use
 
+    # Equipment items, keyed by make/model, so the export can seed the curated
+    # device list with real dimensions, weights and rack heights.
+    equipment = {}
+    for h in handles:
+        if classify(h) != 'equipment':
+            continue
+        make = read_field(h, 'make').strip()
+        model = read_field(h, 'model').strip()
+        if not make and not model:
+            continue
+        physical = equipment_physical(h)
+        if physical:
+            equipment.setdefault('{} | {}'.format(make, model), physical)
+
     for h in handles:
         if classify(h) != 'circuit':
             continue
@@ -3205,6 +3242,8 @@ def build_reference(handles):
         'exported': time.strftime('%Y-%m-%d %H:%M:%S'),
         'devices': devices,
         'unnamed_devices': unnamed_count,
+        # Physical properties from the rack layout, for seeding devices.md.
+        'equipment': equipment,
         'circuits': circuits,
         'unwired_circuits': unwired,
         # One end genuinely absent -- not merely attached to something unnamed.
@@ -5026,6 +5065,22 @@ def tool_export_prompt():
 GOLDEN_FILE = 'devices.md'
 GOLDEN_COLUMNS = ('socket', 'type', 'signal', 'connector', 'side')
 
+# Physical properties, written as "- Key: value" lines between a device's
+# heading and its socket table. They map onto ConnectCAD's EquipItem record,
+# which is where they end up when a device is placed in a rack:
+#
+#   Width / Height / Depth  ->  Width, Height, Depth
+#   Weight                  ->  weight
+#   Power                   ->  power
+#   Rack mounted            ->  width_R  ('full-rack', 'half-rack', or not racked)
+#   Rack U                  ->  heightU
+#
+# Rack U is the device's SIZE in rack units, not its position in a rack. The
+# EquipItem field called 'rack U' -- with a space -- is the position, and that
+# belongs to an installation rather than to the product.
+GOLDEN_PROPERTIES = ('width', 'height', 'depth', 'weight', 'power',
+                     'rack mounted', 'rack u')
+
 _golden_cache = {}
 
 
@@ -5066,9 +5121,19 @@ def parse_golden_devices(text):
             title = line.lstrip('#').strip()
             make, _sep, model = title.partition('|')
             make, model = make.strip(), model.strip()
-            current = {'make': make, 'model': model, 'sockets': []}
+            current = {'make': make, 'model': model, 'sockets': [],
+                       'properties': {}}
             devices[(normalise_model(make), normalise_model(model))] = current
             header = None
+            continue
+
+        # "- Key: value" between the heading and the table.
+        if line.startswith('-') and ':' in line and current is not None:
+            key, _sep, value = line.lstrip('-').strip().partition(':')
+            key = key.strip().lower()
+            value = value.strip()
+            if key in GOLDEN_PROPERTIES and value and value not in ('-', '--'):
+                current['properties'][key] = value
             continue
 
         if not line.startswith('|'):
@@ -5122,6 +5187,47 @@ def golden_socket_specs(entry):
                       (row.get('signal') or '').strip(),
                       (row.get('connector') or '').strip()))
     return specs
+
+
+def golden_property(entry, key, default=''):
+    """One physical property of a curated device, or a default.
+
+    Values are kept as written -- "482.6 mm", "19 in", "1U" -- rather than
+    converted, because the file is read by people as well as by this code and
+    an unlabelled number is a unit waiting to be guessed wrong."""
+    if not entry:
+        return default
+    return (entry.get('properties') or {}).get(key.lower(), default)
+
+
+def golden_number(entry, key):
+    """A property as a float, ignoring any unit suffix. None if absent.
+
+    Returns the number only; the caller has to know what unit it wanted, which
+    is why golden_property exists alongside this."""
+    import re
+    raw = golden_property(entry, key)
+    if not raw:
+        return None
+    match = re.search(r'-?\d+(?:\.\d+)?', raw.replace(',', ''))
+    if not match:
+        return None
+    try:
+        return float(match.group(0))
+    except ValueError:
+        return None
+
+
+def golden_is_rack_mounted(entry):
+    """True, False, or None when the curated list does not say."""
+    raw = golden_property(entry, 'rack mounted').strip().lower()
+    if not raw:
+        return None
+    if raw in ('yes', 'y', 'true', 'full-rack', 'half-rack', 'rack'):
+        return True
+    if raw in ('no', 'n', 'false', 'none', 'not racked'):
+        return False
+    return None
 
 
 def find_golden_device(make, model):

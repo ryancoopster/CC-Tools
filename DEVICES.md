@@ -46,6 +46,28 @@ A heading naming the device, then a table:
 `Type` is `IN`, `OUT` or `IO`. `Side` is `L` or `R` — inputs conventionally
 left, outputs right. Sockets stack down their edge in the order listed.
 
+Physical properties go between the heading and the table, one per line:
+
+```
+- Width: 482.6 mm
+- Height: 44.45 mm
+- Depth: 262.89 mm
+- Weight: 3.84 kg
+- Power: 30 W
+- Rack mounted: yes
+- Rack U: 1
+```
+
+Write the unit — `mm` or `in`, `kg` or `lb` — because an unlabelled number is
+a unit waiting to be guessed wrong. **Rack U is the device's size in rack
+units, not where it sits in a rack**; that second thing belongs to an
+installation, not to the product. Leave a property out if you do not know it;
+do not put a plausible number in.
+
+These map onto ConnectCAD's `EquipItem` record — `Width`/`Height`/`Depth`,
+`weight`, `power`, `width_R`, `heightU` — which is where they end up when the
+device is placed in a rack.
+
 Columns are matched by **header name**, not position, so you can reorder them
 or add your own. Anything that is not a heading followed by a table is ignored,
 so write as much prose between entries as you like.
@@ -56,7 +78,20 @@ Seeded from the Geffen Hall drawing. Whitespace has been normalised — a few
 socket names there carried double or trailing spaces, which are invisible on
 screen and break the name match.
 
+**Physical properties are filled in only where ConnectCAD's own database had
+them — 2 of the 28.** The rest are left blank on purpose rather than filled
+with plausible numbers. Fill them in as you look each device up; that is what
+this file is for.
+
 ### Align Array | AL3
+
+- Width:
+- Height:
+- Depth:
+- Weight:
+- Power:
+- Rack mounted:
+- Rack U:
 
 | Socket | Type | Signal | Connector | Side |
 |---|---|---|---|---|
@@ -64,12 +99,27 @@ screen and break the name match.
 
 ### Custom | Connector Panel
 
+- Width:
+- Height:
+- Depth:
+- Weight:
+- Power:
+- Rack mounted:
+- Rack U:
+
 | Socket | Type | Signal | Connector | Side |
 |---|---|---|---|---|
 | 1-49 | IN | LINE | --- | L |
 | 1-49 | OUT | LINE | XLR3F | R |
 
 ### Focusrite | REDNET-D16R AES
+
+- Width: 482.6 mm
+- Height: 44.45 mm
+- Depth: 262.89 mm
+- Weight: 3.84 kg
+- Power: 30 W
+- Rack mounted: yes
 
 | Socket | Type | Signal | Connector | Side |
 |---|---|---|---|---|
@@ -86,6 +136,14 @@ screen and break the name match.
 
 ### Luminex | 10I 10G 2X SFP 1G x8
 
+- Width:
+- Height:
+- Depth:
+- Weight:
+- Power:
+- Rack mounted:
+- Rack U:
+
 | Socket | Type | Signal | Connector | Side |
 |---|---|---|---|---|
 | LAN 1 | IO | LAN | RJ45 | R |
@@ -101,6 +159,14 @@ screen and break the name match.
 
 ### Luminex | 10T-IP
 
+- Width:
+- Height:
+- Depth:
+- Weight:
+- Power:
+- Rack mounted:
+- Rack U:
+
 | Socket | Type | Signal | Connector | Side |
 |---|---|---|---|---|
 | LAN 8 | IO | LAN | EC-6A | R |
@@ -113,6 +179,14 @@ screen and break the name match.
 | LAN 1 | IO | LAN | EC-6A | R |
 
 ### Luminex | 16I 10G
+
+- Width:
+- Height:
+- Depth:
+- Weight:
+- Power:
+- Rack mounted:
+- Rack U:
 
 | Socket | Type | Signal | Connector | Side |
 |---|---|---|---|---|
@@ -134,6 +208,14 @@ screen and break the name match.
 | SFP 16 | IO | OPT | DUO-SMF | R |
 
 ### Luminex | 30i 10G POE
+
+- Width:
+- Height:
+- Depth:
+- Weight:
+- Power:
+- Rack mounted:
+- Rack U:
 
 | Socket | Type | Signal | Connector | Side |
 |---|---|---|---|---|
@@ -170,6 +252,14 @@ screen and break the name match.
 
 ### Meyer Sound | 2100-LFC
 
+- Width:
+- Height:
+- Depth:
+- Weight:
+- Power:
+- Rack mounted:
+- Rack U:
+
 | Socket | Type | Signal | Connector | Side |
 |---|---|---|---|---|
 | LINE_IN | IN | LINE | XLR3M | L |
@@ -177,6 +267,14 @@ screen and break the name match.
 | LAN | IN | LAN | EC-6A | L |
 
 ### Meyer Sound | Galaxy 408
+
+- Width:
+- Height:
+- Depth:
+- Weight:
+- Power:
+- Rack mounted:
+- Rack U:
 
 | Socket | Type | Signal | Connector | Side |
 |---|---|---|---|---|
@@ -196,6 +294,12 @@ screen and break the name match.
 | LAN 2 | IO | LAN | RJ45 | R |
 
 ### Meyer Sound | Galaxy 816
+
+- Width: 483 mm
+- Height: 88 mm
+- Depth: 410 mm
+- Weight: 7.6 kg
+- Rack mounted: yes
 
 | Socket | Type | Signal | Connector | Side |
 |---|---|---|---|---|
@@ -228,6 +332,14 @@ screen and break the name match.
 
 ### Meyer Sound | MPS-488X
 
+- Width:
+- Height:
+- Depth:
+- Weight:
+- Power:
+- Rack mounted:
+- Rack U:
+
 | Socket | Type | Signal | Connector | Side |
 |---|---|---|---|---|
 | LINE_IN 1 | IN | LINE | XLR3M | L |
@@ -250,6 +362,14 @@ screen and break the name match.
 
 ### Meyer Sound | TIGRA-L
 
+- Width:
+- Height:
+- Depth:
+- Weight:
+- Power:
+- Rack mounted:
+- Rack U:
+
 | Socket | Type | Signal | Connector | Side |
 |---|---|---|---|---|
 | LAN_IN 1 | IN | LAN | EC-6A | L |
@@ -259,12 +379,28 @@ screen and break the name match.
 
 ### Meyer Sound | TIGRA-W
 
+- Width:
+- Height:
+- Depth:
+- Weight:
+- Power:
+- Rack mounted:
+- Rack U:
+
 | Socket | Type | Signal | Connector | Side |
 |---|---|---|---|---|
 | Power In | IN | PWR | powerCON TRUE 1 F | L |
 | Power Thru | OUT | PWR | powerCon TRUE1 M | R |
 
 ### Meyer Sound | ULTRA-X22
+
+- Width:
+- Height:
+- Depth:
+- Weight:
+- Power:
+- Rack mounted:
+- Rack U:
 
 | Socket | Type | Signal | Connector | Side |
 |---|---|---|---|---|
@@ -273,12 +409,28 @@ screen and break the name match.
 
 ### Meyer Sound | ULTRA-X40
 
+- Width:
+- Height:
+- Depth:
+- Weight:
+- Power:
+- Rack mounted:
+- Rack U:
+
 | Socket | Type | Signal | Connector | Side |
 |---|---|---|---|---|
 | LINE_IN | IN | LINE | XLR3M | L |
 | LINE_THRU | OUT | LINE | XLR3M | R |
 
 ### Meyer Sound | ULTRA-X42
+
+- Width:
+- Height:
+- Depth:
+- Weight:
+- Power:
+- Rack mounted:
+- Rack U:
 
 | Socket | Type | Signal | Connector | Side |
 |---|---|---|---|---|
@@ -287,11 +439,27 @@ screen and break the name match.
 
 ### Meyer Sound | UP-4slim
 
+- Width:
+- Height:
+- Depth:
+- Weight:
+- Power:
+- Rack mounted:
+- Rack U:
+
 | Socket | Type | Signal | Connector | Side |
 |---|---|---|---|---|
 | MIDC_IN | IN | MIDC | TBLK-5 | L |
 
 ### Middle Atlantic | EB1
+
+- Width:
+- Height:
+- Depth:
+- Weight:
+- Power:
+- Rack mounted:
+- Rack U:
 
 | Socket | Type | Signal | Connector | Side |
 |---|---|---|---|---|
@@ -302,6 +470,14 @@ screen and break the name match.
 | ? | IO | MILAN SEC | EC-6A | R |
 
 ### Middle Atlantic | UPS-S1000R
+
+- Width:
+- Height:
+- Depth:
+- Weight:
+- Power:
+- Rack mounted:
+- Rack U:
 
 | Socket | Type | Signal | Connector | Side |
 |---|---|---|---|---|
@@ -314,6 +490,14 @@ screen and break the name match.
 | PWR_OUT 6 | OUT | PWR | NEMA 5-15P | R |
 
 ### Radial | POWER-2
+
+- Width:
+- Height:
+- Depth:
+- Weight:
+- Power:
+- Rack mounted:
+- Rack U:
 
 | Socket | Type | Signal | Connector | Side |
 |---|---|---|---|---|
@@ -330,6 +514,14 @@ screen and break the name match.
 
 ### SAI | DB25 to AES XLR B/O
 
+- Width:
+- Height:
+- Depth:
+- Weight:
+- Power:
+- Rack mounted:
+- Rack U:
+
 | Socket | Type | Signal | Connector | Side |
 |---|---|---|---|---|
 | AES_I/O | IN | AES | Built In | L |
@@ -344,6 +536,14 @@ screen and break the name match.
 
 ### SAI | Powercon "Y"
 
+- Width:
+- Height:
+- Depth:
+- Weight:
+- Power:
+- Rack mounted:
+- Rack U:
+
 | Socket | Type | Signal | Connector | Side |
 |---|---|---|---|---|
 | ? | IN | PWR | pCON-W | L |
@@ -351,6 +551,14 @@ screen and break the name match.
 | ? | OUT | PWR | pCON-B | R |
 
 ### Ubiquiti | Cloud Gateway Ultra
+
+- Width:
+- Height:
+- Depth:
+- Weight:
+- Power:
+- Rack mounted:
+- Rack U:
 
 | Socket | Type | Signal | Connector | Side |
 |---|---|---|---|---|
@@ -362,11 +570,27 @@ screen and break the name match.
 
 ### Ubiquiti | U6 Mesh
 
+- Width:
+- Height:
+- Depth:
+- Weight:
+- Power:
+- Rack mounted:
+- Rack U:
+
 | Socket | Type | Signal | Connector | Side |
 |---|---|---|---|---|
 | LAN_IN | IO | LAN | RJ45 | R |
 
 ### theatrixx | 5-L21-30 distro
+
+- Width:
+- Height:
+- Depth:
+- Weight:
+- Power:
+- Rack mounted:
+- Rack U:
 
 | Socket | Type | Signal | Connector | Side |
 |---|---|---|---|---|
@@ -396,6 +620,14 @@ screen and break the name match.
 
 ### theatrixx | DGH 21-30 breakout
 
+- Width:
+- Height:
+- Depth:
+- Weight:
+- Power:
+- Rack mounted:
+- Rack U:
+
 | Socket | Type | Signal | Connector | Side |
 |---|---|---|---|---|
 | L21-30_IN | IN | PWR | L21/30 F | L |
@@ -405,6 +637,14 @@ screen and break the name match.
 | 20A 120v_OUT 2 | OUT | PWR | NEMA 5-20R | R |
 
 ### theatrixx | L21-30 PD
+
+- Width:
+- Height:
+- Depth:
+- Weight:
+- Power:
+- Rack mounted:
+- Rack U:
 
 | Socket | Type | Signal | Connector | Side |
 |---|---|---|---|---|
@@ -423,6 +663,14 @@ screen and break the name match.
 | 20A 120v_OUT 6B | OUT | PWR | NEMA L5-20P | R |
 
 ### theatrixx | PB-11
+
+- Width:
+- Height:
+- Depth:
+- Weight:
+- Power:
+- Rack mounted:
+- Rack U:
 
 | Socket | Type | Signal | Connector | Side |
 |---|---|---|---|---|

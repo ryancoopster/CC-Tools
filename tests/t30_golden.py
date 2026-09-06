@@ -129,4 +129,74 @@ if os.path.exists(shipped):
           all(s[3] in (-1, 1) for v in parsed.values()
               for s in m.golden_socket_specs(v)))
 
+# ── T8: physical properties ───────────────────────────────────────────────
+PROPS = """## Focusrite | REDNET-D16R AES
+
+- Width: 482.6 mm
+- Height: 44.45 mm
+- Weight: 3.84 kg
+- Power: 30 W
+- Rack mounted: yes
+- Rack U: 1
+- Nonsense: ignored
+
+| Socket | Type | Signal | Connector | Side |
+|---|---|---|---|---|
+| AES_IN | IN | AES | XLR3M | L |
+
+## Meyer Sound | TIGRA-L
+
+- Width:
+- Weight: -
+
+| Socket | Type | Signal | Connector | Side |
+|---|---|---|---|---|
+| LAN_IN 1 | IN | LAN | EC-6A | L |
+"""
+P = m.parse_golden_devices(PROPS)
+fr = P[(m.normalise_model('Focusrite'), m.normalise_model('REDNET-D16R AES'))]
+
+check('T8 properties read', m.golden_property(fr, 'width') == '482.6 mm',
+      repr(fr['properties']))
+check('T8 units are kept, not stripped',
+      'mm' in m.golden_property(fr, 'width')
+      and 'kg' in m.golden_property(fr, 'weight'), repr(fr['properties']))
+check('T8 a number can still be pulled out',
+      m.golden_number(fr, 'width') == 482.6 and m.golden_number(fr, 'power') == 30.0,
+      repr((m.golden_number(fr, 'width'), m.golden_number(fr, 'power'))))
+check('T8 rack mounted reads as a boolean',
+      m.golden_is_rack_mounted(fr) is True)
+check('T8 rack U is the size in U', m.golden_number(fr, 'rack u') == 1.0)
+check('T8 an unrecognised key is ignored',
+      'nonsense' not in fr['properties'], repr(fr['properties']))
+check('T8 properties do not break the socket table',
+      len(fr['sockets']) == 1, repr(fr['sockets']))
+
+# Blank and placeholder values must not become data.
+tig = P[(m.normalise_model('Meyer Sound'), m.normalise_model('TIGRA-L'))]
+check('T8 an empty property is not recorded', tig['properties'] == {},
+      repr(tig['properties']))
+check('T8 a dash placeholder is not recorded',
+      m.golden_property(tig, 'weight') == '')
+check('T8 unknown reads as None, not False',
+      m.golden_is_rack_mounted(tig) is None)
+check('T8 a missing number is None', m.golden_number(tig, 'width') is None)
+check('T8 a device with no properties still has its sockets',
+      len(tig['sockets']) == 1)
+
+# ── T9: the shipped file leaves unknowns blank ───────────────────────────
+if os.path.exists(shipped):
+    with_props = [k for k, v in parsed.items() if v['properties']]
+    check('T9 some devices carry real physical data', len(with_props) >= 2,
+          '%d of %d' % (len(with_props), len(parsed)))
+    check('T9 the rest are blank rather than invented',
+          len(with_props) < len(parsed),
+          'every device has properties, which would mean they were guessed')
+    for key, entry in parsed.items():
+        for prop, value in entry['properties'].items():
+            check('T9 %s %s has a unit or is a count' % (key[1][:14], prop),
+                  prop in ('rack mounted', 'rack u')
+                  or any(c.isalpha() for c in value),
+                  repr(value))
+
 R.report_and_exit()
