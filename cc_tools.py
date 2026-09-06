@@ -3020,6 +3020,8 @@ def tool_export_reference():
 # shape. Better to learn that from two rectangles than from a finished tool.
 
 TYPE_SYMDEF = 16
+TYPE_RECT = 3                 # the body rectangle handed to CC_DeviceFromShape
+TYPE_SYMBOL = 15              # the label symbol ConnectCAD draws as the header
 DEFAULTS_FOLDER = 14          # BuildResourceList: Defaults folder
 
 # House convention for socket placement, read off the Chautauqua and Geffen
@@ -3194,6 +3196,30 @@ def probe_make_device(name, x, y, width, height, socket_specs, log,
     except Exception:
         pass
 
+    header = header_bounds(group)
+    rect = body_rect(group)
+    if header and rect:
+        rect_box = bounds(rect)
+        if rect_box:
+            header_width = header[2] - header[0]
+            rect_width = rect_box[2] - rect_box[0]
+            if abs(header_width - rect_width) > 0.001 and rect_width > 0:
+                # The header is fixed width; the body is whatever rectangle
+                # was handed in. Widen the body to match rather than leaving
+                # a device whose two halves do not line up.
+                factor = header_width / rect_width
+                centre_x = (rect_box[0] + rect_box[2]) / 2.0
+                centre_y = (rect_box[1] + rect_box[3]) / 2.0
+                try:
+                    vs.HScale2D(rect, centre_x, centre_y, factor, 1.0, False)
+                    log.append('  ok    body widened {:.3f} -> {:.3f} to match '
+                               'the header'.format(rect_width, header_width))
+                    vs.ResetObject(device)
+                except Exception as err:
+                    log.append('  WARN  could not widen the body: {}'.format(err))
+            else:
+                log.append('  ok    body already matches the header width')
+
     log.extend(group_inventory(group, log_prefix='  '))
     log.extend(measure(device, group, log_prefix='  ', upi=upi, scale=scale))
 
@@ -3302,6 +3328,45 @@ def group_inventory(group, log_prefix='  '):
                 log_prefix, type_n, record or '-'))
         handle = vs.NextObj(handle)
     return out
+
+
+def header_bounds(group):
+    """The label symbol's bounds -- the header strip at the top of a device.
+
+    The header is a SYMBOL of fixed width, not text that grows with the name:
+    a short name and a very long one produced identical 3.0-wide headers, the
+    long one simply overflowing. So the body has to be drawn to the header's
+    width, not the other way round."""
+    if not group:
+        return None
+    handle = vs.FInGroup(group)
+    guard = 0
+    while handle and guard < 200:
+        guard += 1
+        try:
+            if vs.GetTypeN(handle) == TYPE_SYMBOL:
+                return bounds(handle)
+        except Exception:
+            pass
+        handle = vs.NextObj(handle)
+    return None
+
+
+def body_rect(group):
+    """The rectangle handed to CC_DeviceFromShape, which forms the body."""
+    if not group:
+        return None
+    handle = vs.FInGroup(group)
+    guard = 0
+    while handle and guard < 200:
+        guard += 1
+        try:
+            if vs.GetTypeN(handle) == TYPE_RECT:
+                return handle
+        except Exception:
+            pass
+        handle = vs.NextObj(handle)
+    return None
 
 
 def body_bounds(group):

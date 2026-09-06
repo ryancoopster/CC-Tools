@@ -23,7 +23,25 @@ def wire_mock(vs, mod, *, device_ok=True, group_ok=True, symbol_ok=True,
     # report device-local ones. Conflating them is the bug under test.
     boxes = {}
     made['boxes'] = boxes
-    vs.GetBBox = lambda h: boxes.get(id(h), (0.0, 1.0, 2.0, 0.0))
+    def bbox(h):
+        if id(h) in boxes:
+            return boxes[id(h)]
+        record = getattr(h, 'record', '')
+        if record == 'Rect':
+            return (-1.0, 0.0, 1.0, -1.0)        # body, 2.0 wide
+        if record == 'Symbol':
+            return (-1.5, 0.4, 1.5, -0.3)        # header, 3.0 wide
+        return (0.0, 1.0, 2.0, 0.0)
+    vs.GetBBox = bbox
+
+    def type_of(h):
+        record = getattr(h, 'record', '')
+        return {'Rect': 3, 'Symbol': 15}.get(record, 86)
+    vs.GetTypeN = type_of
+
+    scaled = []
+    made['scaled'] = scaled
+    vs.HScale2D = lambda h, cx, cy, fx, fy, txt: scaled.append(round(fx, 4))
     made['deleted'] = deleted
     moves = []
     made['moves'] = moves
@@ -78,9 +96,10 @@ def wire_mock(vs, mod, *, device_ok=True, group_ok=True, symbol_ok=True,
         if not group_ok:
             return None
         if h not in groups:
-            # CC_DeviceFromShape duplicates the source shape into the group;
-            # that shape is the device body and is what body_bounds measures.
-            groups[h] = Obj('Group', {}, children=[Obj('Rect', {})])
+            # A real profile group holds the duplicated body rectangle AND the
+            # fixed-width header symbol ConnectCAD draws above it.
+            groups[h] = Obj('Group', {}, children=[Obj('Rect', {}),
+                                                   Obj('Symbol', {})])
         return groups[h]
     vs.GetCustomObjectProfileGroup = profile_group
 
@@ -479,5 +498,51 @@ check('T20 group contents listed', 'in group:' in (log20 or ''), (log20 or '')[:
 check('T20 the long-name experiment is labelled in the log',
       'LONG name' in (log20 or '') and 'SHORT name' in (log20 or ''),
       (log20 or '')[:400])
+
+
+# ── T21: the body is widened to the header, which is a fixed-width symbol ───
+# A short name and a very long one produced identical 3.0-wide headers -- the
+# long one just overflowed -- so the header is a symbol, not text that grows.
+# The mismatch was the rectangle being drawn narrower than it.
+m21, vs21 = load(Doc([[dev('x')]]))
+rect21 = Obj('Rect', {})
+header21 = Obj('Symbol', {})
+skt21 = Obj('Socket', {'name': 'OUT 1', 'tag': '', 'type': 'OUT'})
+group21 = Obj('Group', {}, children=[rect21, header21, skt21])
+
+geometry = {id(rect21): (-1.0, 0.0, 1.0, -1.0),      # body, 2.0 wide
+            id(header21): (-1.5, 0.4, 1.5, -0.3),    # header, 3.0 wide
+            id(skt21): (1.371, -0.397, 1.629, -0.603)}
+vs21.GetBBox = lambda h: geometry.get(id(h), (0.0, 0.0, 0.0, 0.0))
+vs21.GetTypeN = lambda h: {id(rect21): 3, id(header21): 15,
+                           id(skt21): 86}.get(id(h), 2)
+
+check('T21 header found by symbol type',
+      m21.header_bounds(group21) == (-1.5, -0.3, 1.5, 0.4),
+      repr(m21.header_bounds(group21)))
+check('T21 body rectangle found by rect type',
+      m21.body_rect(group21) is rect21, repr(m21.body_rect(group21)))
+check('T21 header is wider than the body as drawn',
+      (m21.header_bounds(group21)[2] - m21.header_bounds(group21)[0]) == 3.0)
+
+# body_bounds is the UNION of body and header, which is what sockets hang off.
+united = m21.body_bounds(group21)
+check('T21 body_bounds spans body AND header',
+      united == (-1.5, -1.0, 1.5, 0.4), repr(united))
+
+# ── T22: the widening actually runs during a probe ──────────────────────────
+m22, vs22 = load(Doc([[dev('x')]]))
+made22, _c = wire_mock(vs22, m22, circuits=[Obj('Circuit', {})])
+vs22.AlertQuestion = lambda *a: 1
+m22.tool_creation_probe()
+import os
+log22 = None
+for name in sorted(os.listdir(m22.BASE_FOLDER), reverse=True):
+    if name.startswith('creation_probe'):
+        log22 = open(os.path.join(m22.BASE_FOLDER, name), encoding='utf-8').read()
+        break
+check('T22 the body/header width relationship is reported',
+      'header width' in (log22 or '') or 'body widened' in (log22 or ''),
+      (log22 or '')[:500])
 
 R.report_and_exit()
