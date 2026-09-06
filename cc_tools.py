@@ -75,6 +75,8 @@ TOOL_MATCH     = 2
 TOOL_SPELL     = 3
 TOOL_REFERENCE = 4
 TOOL_PROBE     = 5
+TOOL_PROMPT    = 6
+TOOL_JOB       = 7
 
 kOK    = 1
 kSetup = 12255
@@ -3328,6 +3330,29 @@ def socket_prototype(symbol):
     return None
 
 
+def build_device(name, tag, make, model, x, y, socket_specs, log,
+                 upi=1.0, scale=1.0, grid=None):
+    """Build a device by hand, sockets and all. Returns (handle, sockets_ok).
+
+    Used when no device symbol matches. Socket specs are
+    (symbol, name, type, side) with optional signal and connector appended."""
+    handle, ok = probe_make_device(name, x, y, 2.0, 1.0, socket_specs, log,
+                                   upi, scale, grid)
+    if handle:
+        if tag and tag != name:
+            write_field(handle, resolve_field(handle, DEVICE_TAG_FIELDS) or 'tag',
+                        tag)
+        if make:
+            write_field(handle, 'make', make)
+        if model:
+            write_field(handle, 'model', model)
+        try:
+            vs.ResetObject(handle)
+        except Exception:
+            pass
+    return handle, ok
+
+
 def probe_make_device(name, x, y, width, height, socket_specs, log,
                       upi=1.0, scale=1.0, grid=None):
     """Create one device with sockets.
@@ -3409,7 +3434,9 @@ def probe_make_device(name, x, y, width, height, socket_specs, log,
     made = 0
     per_side = {}
     for spec in socket_specs:
-        symbol_name, socket_name, socket_type, side = spec
+        symbol_name, socket_name, socket_type, side = spec[:4]
+        spec_signal = spec[4] if len(spec) > 4 else ''
+        spec_connector = spec[5] if len(spec) > 5 else ''
         index = per_side.get(side, 0)
         per_side[side] = index + 1
         symbol = import_socket_symbol(symbol_name)
@@ -3439,8 +3466,8 @@ def probe_make_device(name, x, y, width, height, socket_specs, log,
         write_field(socket, 'tag', socket_name)
         write_field(socket, 'type', socket_type)
         # Without these the socket renders '???' for its signal and connector.
-        write_field(socket, 'signal', 'LAN')
-        write_field(socket, 'connector', 'EC-6A')
+        write_field(socket, 'signal', spec_signal or 'LAN')
+        write_field(socket, 'connector', spec_connector or 'EC-6A')
         try:
             vs.ResetObject(socket)
         except Exception:
@@ -4093,6 +4120,435 @@ def tool_creation_probe():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# TOOL 7: SCHEMATIC JOBS  (export a prompt, then draw what comes back)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Two halves of one workflow, deliberately kept apart:
+#
+#   Export prompt   writes everything a model needs to design a schematic for
+#                   THIS drawing -- its conventions, a worked example, and the
+#                   job format -- as a text file to paste into Claude.
+#   Draw job        reads the JSON that comes back and builds it.
+#
+# The file in between is the contract. It does not care whether the JSON was
+# produced by a conversation in the Claude app, by an MCP server, or by an API
+# call from this plug-in: the drawing step is identical either way. That keeps
+# the work independent of how anyone gets their model, which matters because
+# the easiest route for one person (an API key) is a non-starter for another.
+#
+# It also makes the whole thing reviewable. The job is a file you can read
+# before a single object is created.
+
+JOB_FILE = 'schematic_job.json'
+PROMPT_FILE = 'schematic_prompt.txt'
+
+# Devices are laid out on a column grid. ConnectCAD wires by horizontal
+# alignment, so a schematic's layout IS its wiring -- devices that talk to each
+# other belong in adjacent columns at compatible heights.
+JOB_COLUMN_INCHES = 4.0
+JOB_ROW_INCHES = 2.5
+
+
+JOB_FORMAT = '''{
+  "devices": [
+    {
+      "name": "SWTCH 4.01 HL UPPER",     // required, and the link key
+      "tag": "SWTCH 4.01 HL UPPER",      // optional, defaults to name
+      "make": "Luminex",                 // used to find a device symbol
+      "model": "10i-IP",
+      "column": 0,                       // 0 = leftmost
+      "row": 0,                          // 0 = topmost
+      "sockets": [                       // ignored when a symbol is found
+        {"name": "LAN 1", "type": "OUT", "signal": "LAN",
+         "connector": "EC-6A", "side": "R"}
+      ]
+    }
+  ],
+  "circuits": [
+    {"from": {"device": "SWTCH 4.01 HL UPPER", "socket": "LAN 6"},
+     "to":   {"device": "SPK 1.01 HL ARRAY 1", "socket": "LAN_IN 1"},
+     "signal": "MILAN PRI"}
+  ]
+}'''
+
+
+def job_path():
+    return os.path.join(BASE_FOLDER, JOB_FILE)
+
+
+# ─── Export a prompt ─────────────────────────────────────────────────────────
+def build_prompt(profile, reference, catalogue):
+    """Everything a model needs to design a schematic for THIS drawing.
+
+    The conventions come from the drawing itself rather than from a description
+    of it, and a real worked example is included because an example in the
+    exact output format teaches more than any amount of prose about it."""
+    import json
+
+    lines = []
+    lines.append('You are designing a ConnectCAD signal-flow schematic for '
+                 'Vectorworks.')
+    lines.append('')
+    lines.append('Reply with ONE JSON object and nothing else -- no commentary, '
+                 'no code fence.')
+    lines.append('')
+    lines.append('=' * 74)
+    lines.append('THE JOB FORMAT')
+    lines.append('=' * 74)
+    lines.append(JOB_FORMAT)
+    lines.append('')
+    lines.append('Rules that matter:')
+    lines.append('- Device names are the link key. They must be unique unless '
+                 'you deliberately')
+    lines.append('  mean the same physical device drawn twice.')
+    lines.append('- Every circuit endpoint must name a device in "devices" and '
+                 'a socket on it.')
+    lines.append('- Signal flows left to right: put sources in lower columns '
+                 'than destinations.')
+    lines.append('- Prefer makes and models this drawing already uses; a device '
+                 'with a matching')
+    lines.append('  symbol is built from it exactly, sockets and all.')
+    lines.append('')
+
+    lines.append('=' * 74)
+    lines.append('HOW THIS DRAWING IS BUILT')
+    lines.append('=' * 74)
+    lines.extend(profile_report_lines(profile))
+
+    if catalogue:
+        lines.append('Device symbols available (these build exactly, no '
+                     'sockets needed):')
+        for entry in catalogue:
+            if entry['make'] or entry['model']:
+                lines.append('  {} {}   ({} socket(s))'.format(
+                    entry['make'], entry['model'], entry['sockets']))
+        lines.append('')
+
+    if reference and reference.get('devices'):
+        lines.append('=' * 74)
+        lines.append('A WORKED EXAMPLE FROM THIS DRAWING')
+        lines.append('=' * 74)
+        lines.append('Real devices and wiring, in the same shape your reply '
+                     'should take:')
+        lines.append('')
+        sample = {
+            'devices': reference['devices'][:8],
+            'circuits': reference['circuits'][:12],
+        }
+        lines.append(json.dumps(sample, indent=2))
+        lines.append('')
+
+    lines.append('=' * 74)
+    lines.append('WHAT TO DESIGN')
+    lines.append('=' * 74)
+    lines.append('Describe what you want below this line, then send the whole '
+                 'message.')
+    lines.append('')
+    lines.append('>>> ')
+    return '\n'.join(lines)
+
+
+def tool_export_prompt():
+    """Returns (status, summary)."""
+    handles = collect_scope(SCOPE_DOCUMENT)
+    _walked, parents = walk_document(with_parents=True)
+    profile = build_document_profile(handles, parents)
+    reference = build_reference(handles)
+    catalogue = device_symbol_catalogue()
+
+    text = build_prompt(profile, reference, catalogue)
+    os.makedirs(BASE_FOLDER, exist_ok=True)
+    path = os.path.join(BASE_FOLDER, PROMPT_FILE)
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(text)
+
+    vs.AlrtDialog(
+        'Prompt written to:\n{}\n\n'
+        '1. Open it, add what you want at the bottom, and copy the whole file.\n'
+        '2. Paste it into Claude and talk about the design.\n'
+        '3. Save the JSON reply as {} in the same folder.\n'
+        '4. Run CC Tools again and choose "Draw schematic job".'.format(
+            path, JOB_FILE))
+    return 'done', 'prompt for {} device(s) written to\n{}'.format(
+        len(profile['device_models']), path)
+
+
+# ─── Read a job ──────────────────────────────────────────────────────────────
+def read_job():
+    """Load and validate the job file. Returns (job, problems).
+
+    Validation is deliberately strict and reported all at once: a job is
+    written by a language model, and a circuit naming a device that does not
+    exist should be a message, not a half-built schematic."""
+    import json
+    path = job_path()
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            text = f.read()
+    except FileNotFoundError:
+        return None, ['No {} found in {}.'.format(JOB_FILE, BASE_FOLDER)]
+    except Exception as err:
+        return None, ['Could not read {}: {}'.format(JOB_FILE, err)]
+
+    # A pasted reply often arrives wrapped in a code fence.
+    stripped = text.strip()
+    if stripped.startswith('```'):
+        stripped = stripped.split('\n', 1)[-1]
+        if stripped.rstrip().endswith('```'):
+            stripped = stripped.rstrip()[:-3]
+
+    try:
+        job = json.loads(stripped)
+    except Exception as err:
+        return None, ['{} is not valid JSON: {}'.format(JOB_FILE, err)]
+
+    problems = []
+    devices = job.get('devices')
+    if not isinstance(devices, list) or not devices:
+        problems.append('No "devices" list in the job.')
+        return None, problems
+
+    names = {}
+    for index, device in enumerate(devices):
+        if not isinstance(device, dict):
+            problems.append('Device {} is not an object.'.format(index))
+            continue
+        name = (device.get('name') or '').strip()
+        if not name:
+            problems.append('Device {} has no name.'.format(index))
+            continue
+        if name in names:
+            problems.append('Two devices are both named "{}". Names are the '
+                            'link key, so they must differ.'.format(name))
+        names[name] = device
+
+    for index, circuit in enumerate(job.get('circuits') or []):
+        if not isinstance(circuit, dict):
+            problems.append('Circuit {} is not an object.'.format(index))
+            continue
+        for end in ('from', 'to'):
+            side = circuit.get(end)
+            if not isinstance(side, dict) or not side.get('device'):
+                problems.append('Circuit {} has no "{}" device.'.format(index, end))
+                continue
+            if side['device'] not in names:
+                problems.append('Circuit {} connects to "{}", which is not in '
+                                'the device list.'.format(index, side['device']))
+    return job, problems
+
+
+# ─── Draw a job ──────────────────────────────────────────────────────────────
+def job_position(device, gx, gy):
+    """Where a job device sits, from explicit coordinates or a column/row grid.
+
+    ConnectCAD wires by horizontal alignment, so position is not decoration --
+    it is how the schematic says what connects to what."""
+    try:
+        if device.get('x') is not None and device.get('y') is not None:
+            return float(device['x']), float(device['y'])
+    except (TypeError, ValueError):
+        pass
+    try:
+        column = int(device.get('column') or 0)
+    except (TypeError, ValueError):
+        column = 0
+    try:
+        row = int(device.get('row') or 0)
+    except (TypeError, ValueError):
+        row = 0
+    unit_x = gx if gx else 0.25
+    unit_y = gy if gy else 0.25
+    return (column * JOB_COLUMN_INCHES / 0.25 * unit_x,
+            -row * JOB_ROW_INCHES / 0.25 * unit_y)
+
+
+def job_socket_specs(device):
+    """The job's sockets as the builder's (symbol, name, type, side) tuples."""
+    specs = []
+    for socket in device.get('sockets') or []:
+        if not isinstance(socket, dict):
+            continue
+        name = (socket.get('name') or '').strip()
+        if not name:
+            continue
+        side_text = (socket.get('side') or '').strip().upper()
+        side = -1 if side_text.startswith('L') else 1
+        symbol = 'skt_L' if side < 0 else 'skt_R'
+        specs.append((symbol, name, (socket.get('type') or 'IO').upper(), side,
+                      socket.get('signal') or '', socket.get('connector') or ''))
+    return specs
+
+
+def build_job_devices(job, log, upi, scale, grid):
+    """Create every device in the job. Returns {name: handle}.
+
+    A matching device symbol is preferred over building by hand: it needs no
+    layout and reproduces a device somebody already drew correctly."""
+    gx, gy = grid if grid else (None, None)
+    catalogue = device_symbol_catalogue()
+    made = {}
+
+    for device in job['devices']:
+        name = (device.get('name') or '').strip()
+        tag = (device.get('tag') or name).strip()
+        make = device.get('make') or ''
+        model = device.get('model') or ''
+        x, y = job_position(device, gx, gy)
+
+        match = find_device_symbol(make, model, catalogue)
+        if match:
+            handle = place_device_from_symbol(match['handle'], x, y, name, tag)
+            if handle:
+                made[name] = handle
+                log.append('  symbol  {:<30} from {}'.format(
+                    name[:30], match['symbol']))
+                continue
+            log.append('  WARN    {:<30} symbol {} would not place'.format(
+                name[:30], match['symbol']))
+
+        specs = job_socket_specs(device)
+        if not specs:
+            log.append('  WARN    {:<30} no symbol and no sockets listed'.format(
+                name[:30]))
+        handle, ok = build_device(name, tag, make, model, x, y, specs, log,
+                                  upi, scale, grid)
+        if handle:
+            made[name] = handle
+            log.append('  built   {:<30} {} socket(s){}'.format(
+                name[:30], len(specs), '' if ok else '  (some sockets failed)'))
+        else:
+            log.append('  FAIL    {:<30} could not be created'.format(name[:30]))
+    return made
+
+
+def wire_job(job, made, log):
+    """Wire the job's circuits, then report which ones actually took.
+
+    ConnectSelected joins every aligned socket pair between two devices at
+    once, so it is run once per device PAIR rather than once per circuit.
+    Whether a circuit exists afterwards is decided by reading the association
+    back -- the command returning cleanly proves nothing."""
+    circuits = job.get('circuits') or []
+    if not circuits:
+        return 0, []
+
+    pairs = []
+    for circuit in circuits:
+        source = (circuit.get('from') or {}).get('device')
+        destination = (circuit.get('to') or {}).get('device')
+        if source in made and destination in made:
+            key = (source, destination)
+            if key not in pairs:
+                pairs.append(key)
+
+    command = getattr(vs, 'DoMenuTextByName', None)
+    if command is None:
+        log.append('  FAIL  DoMenuTextByName unavailable; nothing wired')
+        return 0, [(c, 'no way to run ConnectSelected') for c in circuits]
+
+    for source, destination in pairs:
+        try:
+            vs.DSelectAll()
+            vs.SetSelect(made[source])
+            vs.SetSelect(made[destination])
+            command('ConnectSelected', 0)
+        except Exception as err:
+            log.append('  WARN  wiring {} -> {} raised: {}'.format(
+                source, destination, err))
+    try:
+        vs.DSelectAll()
+    except Exception:
+        pass
+
+    # What exists now, read from the stored associations.
+    actual = set()
+    for handle in walk_document():
+        if classify(handle) != 'circuit':
+            continue
+        source, destination = circuit_endpoints(handle)
+        if not source or not destination:
+            continue
+        actual.add((source.get('device'), source.get('socket'),
+                    destination.get('device'), destination.get('socket')))
+        actual.add((destination.get('device'), destination.get('socket'),
+                    source.get('device'), source.get('socket')))
+
+    missing = []
+    for circuit in circuits:
+        source = circuit.get('from') or {}
+        destination = circuit.get('to') or {}
+        key = (source.get('device'), source.get('socket'),
+               destination.get('device'), destination.get('socket'))
+        if key not in actual:
+            missing.append((circuit, 'no circuit found between these sockets'))
+    return len(circuits) - len(missing), missing
+
+
+def tool_draw_job():
+    """Returns (status, summary)."""
+    job, problems = read_job()
+    if problems and job is None:
+        vs.AlrtDialog('Cannot draw the job:\n\n{}'.format('\n'.join(problems[:12])))
+        return 'stopped', None
+    if problems:
+        detail = '\n'.join('  ' + p for p in problems[:10])
+        if vs.AlertQuestion(
+                'The job has {} problem(s).'.format(len(problems)),
+                '{}\n\nDraw the rest anyway?'.format(detail),
+                0, 'Draw anyway', 'Cancel', '', '') != 1:
+            return 'cancelled', 'job has problems; nothing drawn'
+
+    devices = job['devices']
+    circuits = job.get('circuits') or []
+    if vs.AlertQuestion(
+            'Draw {} device(s) and {} circuit(s)?'.format(
+                len(devices), len(circuits)),
+            'They will be created on the active layer. Undo afterwards if the '
+            'result is not what you wanted.',
+            0, 'Draw it', 'Cancel', '', '') != 1:
+        return 'cancelled', None
+
+    log = ['SCHEMATIC JOB', '']
+    try:
+        vs.PushAttrs()
+    except Exception:
+        pass
+    _layer, scale, upi, grid = active_layer_context(log)
+    log.append('')
+
+    log.append('Devices')
+    made = build_job_devices(job, log, upi, scale, grid)
+    log.append('')
+
+    log.append('Wiring')
+    wired, missing = wire_job(job, made, log)
+    log.append('  {} of {} circuit(s) wired'.format(wired, len(circuits)))
+    for circuit, why in missing[:15]:
+        source = (circuit.get('from') or {}).get('device')
+        destination = (circuit.get('to') or {}).get('device')
+        log.append('  NOT WIRED  {} -> {}: {}'.format(source, destination, why))
+    if len(missing) > 15:
+        log.append('  ... and {} more'.format(len(missing) - 15))
+
+    try:
+        vs.PopAttrs()
+    except Exception:
+        pass
+    reset = reset_circuits()
+    log.append('')
+    log.append('Circuits reset: {}'.format(reset))
+
+    path = save_text('schematic_job_report',
+                     '\n'.join(report_header('SCHEMATIC JOB') + log))
+    summary = '{} of {} device(s), {} of {} circuit(s)'.format(
+        len(made), len(devices), wired, len(circuits))
+    if missing:
+        summary += '\n{} circuit(s) not wired - see the report'.format(len(missing))
+    vs.AlrtDialog('{}\n\nReport:\n{}'.format(summary, path))
+    return 'done', '{}\n{}'.format(summary, path)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # CLAUDE API CLIENT
 # ═══════════════════════════════════════════════════════════════════════════
 #
@@ -4432,6 +4888,7 @@ lToolLbl = 304
 lDumpChk, lNormChk, lMatchChk, lSpellChk = 305, 306, 307, 310
 lRefChk = 311
 lProbeChk = 312
+lPromptChk, lJobChk = 313, 314
 lOrderTxt, lHintTxt = 308, 309
 
 
@@ -4449,6 +4906,8 @@ def ask_which_tools():
     vs.CreateCheckBox(dlg, lSpellChk, 'Spell Check')
     vs.CreateCheckBox(dlg, lRefChk, 'Export Reference Schematic')
     vs.CreateCheckBox(dlg, lProbeChk, 'Creation Probe  (writes - scratch file only)')
+    vs.CreateCheckBox(dlg, lPromptChk, 'Export prompt for Claude')
+    vs.CreateCheckBox(dlg, lJobChk, 'Draw schematic job  (writes)')
     vs.CreateStaticText(
         dlg, lOrderTxt,
         'Run in this order. Normalising first resolves case- and space-only\n'
@@ -4464,7 +4923,9 @@ def ask_which_tools():
     vs.SetBelowItem(dlg, lMatchChk, lSpellChk, 0, 0)
     vs.SetBelowItem(dlg, lSpellChk, lRefChk, 0, 0)
     vs.SetBelowItem(dlg, lRefChk, lProbeChk, 0, 0)
-    vs.SetBelowItem(dlg, lProbeChk, lOrderTxt, 0, 8)
+    vs.SetBelowItem(dlg, lProbeChk, lPromptChk, 0, 0)
+    vs.SetBelowItem(dlg, lPromptChk, lJobChk, 0, 0)
+    vs.SetBelowItem(dlg, lJobChk, lOrderTxt, 0, 8)
     vs.SetBelowItem(dlg, lOrderTxt, lHintTxt, 0, 8)
 
     def handler(item, data):
@@ -4478,6 +4939,8 @@ def ask_which_tools():
             vs.SetBooleanItem(dlg, lSpellChk, False)
             vs.SetBooleanItem(dlg, lRefChk, False)
             vs.SetBooleanItem(dlg, lProbeChk, False)
+            vs.SetBooleanItem(dlg, lPromptChk, False)
+            vs.SetBooleanItem(dlg, lJobChk, False)
         elif item == kOK:
             picked = []
             # Fixed order, independent of which boxes the user ticked first.
@@ -4493,6 +4956,10 @@ def ask_which_tools():
                 picked.append(TOOL_REFERENCE)
             if vs.GetBooleanItem(dlg, lProbeChk):
                 picked.append(TOOL_PROBE)
+            if vs.GetBooleanItem(dlg, lPromptChk):
+                picked.append(TOOL_PROMPT)
+            if vs.GetBooleanItem(dlg, lJobChk):
+                picked.append(TOOL_JOB)
             chosen['tools'] = picked
 
     if vs.RunLayoutDialog(dlg, handler) != kOK:
@@ -4507,6 +4974,8 @@ TOOL_RUNNERS = [
     (TOOL_SPELL, 'Spell Check'),
     (TOOL_REFERENCE, 'Export Reference Schematic'),
     (TOOL_PROBE, 'Creation Probe'),
+    (TOOL_PROMPT, 'Export prompt'),
+    (TOOL_JOB, 'Draw schematic job'),
 ]
 
 
@@ -4534,6 +5003,8 @@ def run_cc_tools():
         TOOL_SPELL: tool_spellcheck,
         TOOL_REFERENCE: tool_export_reference,
         TOOL_PROBE: tool_creation_probe,
+        TOOL_PROMPT: tool_export_prompt,
+        TOOL_JOB: tool_draw_job,
     }
     names = dict((tool, name) for tool, name in TOOL_RUNNERS)
 
