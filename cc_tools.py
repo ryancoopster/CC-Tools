@@ -78,6 +78,7 @@ TOOL_PROBE     = 5
 TOOL_PROMPT    = 6
 TOOL_JOB       = 7
 TOOL_PREFS     = 8
+TOOL_SEARCH    = 9
 
 kOK    = 1
 kSetup = 12255
@@ -720,6 +721,19 @@ def save_text(prefix, text, ext='txt'):
         prefix, time.strftime('%Y%m%d_%H%M%S'), ext))
     with open(path, 'w', encoding='utf-8') as f:
         f.write(text)
+    return path
+
+
+def save_csv(prefix, rows):
+    """Write rows to a timestamped CSV. Row 0 is the header.
+
+    newline='' is required, not stylistic: without it csv writes \r\r\n on
+    Windows and every other line of the file is blank."""
+    os.makedirs(BASE_FOLDER, exist_ok=True)
+    path = os.path.join(BASE_FOLDER, '{}_{}.csv'.format(
+        prefix, time.strftime('%Y%m%d_%H%M%S')))
+    with open(path, 'w', newline='', encoding='utf-8') as f:
+        csv.writer(f).writerows(rows)
     return path
 
 
@@ -4407,6 +4421,308 @@ def validate_job_path(path):
     return path, path
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# TOOL: SEARCH CONNECTCAD OBJECTS  (read-only)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Vectorworks' own Find and Replace does not see inside plug-in object records,
+# so the values that matter most in a ConnectCAD drawing -- a circuit's cable
+# name, a device's model, an endpoint cache -- are unsearchable. This walks
+# every field of every ConnectCAD object instead.
+#
+# Read-only by design. It finds and selects; it never writes. Spell Check is
+# where replacement lives, and keeping the two apart means this one can search
+# fields that would be dangerous to edit (endpoint caches, dropdown values)
+# without ever risking a write to them.
+
+sTermLbl, sTermEdit = 704, 705
+sScopeLbl, sScopePopup = 706, 707
+sKindLbl, sDevChk, sCircChk, sOtherChk = 708, 709, 710, 711
+sCaseChk, sWholeChk, sInternalChk = 712, 713, 714
+sNoteTxt = 715
+
+rLB, rCountTxt, rHintTxt = 720, 721, 722
+RCOL_OBJECT, RCOL_LABEL, RCOL_FIELD, RCOL_VALUE, RCOL_LAYER = 0, 1, 2, 3, 4
+
+# How many hits the results table shows. A search for a common letter can match
+# tens of thousands of fields, and the list browser is not the place to find
+# that out. The full set always goes to the CSV, and the cap is reported rather
+# than silently applied.
+SEARCH_DISPLAY_CAP = 500
+
+# ConnectCAD's own bookkeeping. Searchable on request, hidden by default: a
+# drawing has hundreds of __ISNEW / __Version / ControlPoint fields and they
+# bury the values anyone is actually looking for.
+def is_internal_field(name):
+    return name.startswith('__')
+
+
+def object_label(handle, kind, parents=None):
+    """A human identifier for a found object.
+
+    A field name and a value are not enough to act on a hit -- "Cable = HL 1"
+    could be any of 372 circuits. This says WHICH object, in the terms the
+    drawing uses."""
+    if kind == 'device':
+        field = resolve_field(handle, DEVICE_NAME_FIELDS)
+        name = read_field(handle, field) if field else ''
+        return name if not is_unnamed(name) else '(unnamed device)'
+
+    if kind == 'circuit':
+        source = read_field(handle, 'Src_Dev_Name')
+        src_skt = read_field(handle, 'Src_Skt_Name')
+        dest = read_field(handle, 'Dst_Dev_Name')
+        dst_skt = read_field(handle, 'Dst_Skt_Name')
+        return '{}/{} -> {}/{}'.format(source or '?', src_skt or '?',
+                                       dest or '?', dst_skt or '?')
+
+    if kind == 'socket':
+        field = resolve_field(handle, SOCKET_NAME_FIELDS)
+        name = read_field(handle, field) if field else ''
+        owner = owning_device(handle, parents or {})
+        if owner is not None:
+            owner_field = resolve_field(owner, DEVICE_NAME_FIELDS)
+            owner_name = read_field(owner, owner_field) if owner_field else ''
+            if not is_unnamed(owner_name):
+                return '{} / {}'.format(owner_name, name or '?')
+        return name or '(unnamed socket)'
+
+    if kind == 'equipment':
+        field = resolve_field(handle, EQUIP_NAME_FIELDS)
+        return read_field(handle, field) if field else ''
+
+    return get_pio_name(handle)
+
+
+def field_matches(value, term, case_sensitive, whole_value):
+    """Does one field value match?
+
+    `whole_value` compares the entire field rather than looking for the term
+    inside it -- which is how you find a field that is EXACTLY '???' or exactly
+    blank, neither of which a substring search can express."""
+    if not case_sensitive:
+        value = value.lower()
+        term = term.lower()
+    return value == term if whole_value else term in value
+
+
+def search_objects(term, handles, kinds, parents=None, case_sensitive=False,
+                   whole_value=False, include_internal=False):
+    """Every field of every matching object that contains `term`.
+
+    Returns a list of hit dicts. One object can produce several hits: a device
+    whose name AND model both contain the term is two findings, because they
+    are two different things to look at."""
+    hits = []
+    for handle in handles:
+        kind = classify(handle)
+        if kind is None or kind not in kinds:
+            continue
+        label = object_label(handle, kind, parents)
+        layer = layer_name(handle)
+        record = get_pio_name(handle)
+        for field, value in get_fields(handle):
+            if not include_internal and is_internal_field(field):
+                continue
+            if not field_matches(value or '', term, case_sensitive, whole_value):
+                continue
+            hits.append({
+                'handle': handle,
+                'kind': kind,
+                'record': record,
+                'label': label,
+                'field': field,
+                'value': value or '',
+                'layer': layer,
+            })
+    return hits
+
+
+def ask_search():
+    """Returns (term, scope, kinds, case_sensitive, whole, internal) or None."""
+    chosen = {}
+    dlg = vs.CreateLayout('Search ConnectCAD Objects', False, 'Search', 'Cancel')
+
+    vs.CreateStaticText(dlg, sTermLbl, 'Find:', -1)
+    vs.CreateEditText(dlg, sTermEdit, '', 44)
+
+    vs.CreateStaticText(dlg, sScopeLbl, 'Look in:', -1)
+    vs.CreatePullDownMenu(dlg, sScopePopup, 26)
+    vs.AddChoice(dlg, sScopePopup, 'Selected objects only', -1)
+    vs.AddChoice(dlg, sScopePopup, 'Active layer', -1)
+    vs.AddChoice(dlg, sScopePopup, 'Whole document', -1)
+
+    vs.CreateStaticText(dlg, sKindLbl, 'Objects:', -1)
+    vs.CreateCheckBox(dlg, sDevChk, 'Devices')
+    vs.CreateCheckBox(dlg, sCircChk, 'Circuits')
+    vs.CreateCheckBox(dlg, sOtherChk, 'Sockets, equipment and panels')
+
+    vs.CreateCheckBox(dlg, sCaseChk, 'Match case')
+    vs.CreateCheckBox(dlg, sWholeChk, 'Match the whole field, not part of it')
+    vs.CreateCheckBox(dlg, sInternalChk,
+                      'Include ConnectCAD internal fields (__ISNEW, control '
+                      'points\u2026)')
+
+    vs.CreateStaticText(
+        dlg, sNoteTxt,
+        'Searches EVERY field, including ones Vectorworks\' own Find and\n'
+        'Replace cannot see: cable names, signals, endpoint caches, makes\n'
+        'and models. Read-only \u2014 it finds and selects, it never edits.\n\n'
+        'Leave Find empty and tick "whole field" to list blank fields.', -1)
+
+    vs.SetFirstLayoutItem(dlg, sTermLbl)
+    vs.SetRightItem(dlg, sTermLbl, sTermEdit, 0, 0)
+    vs.SetBelowItem(dlg, sTermLbl, sScopeLbl, 0, 8)
+    vs.SetRightItem(dlg, sScopeLbl, sScopePopup, 0, 0)
+    vs.SetBelowItem(dlg, sScopeLbl, sKindLbl, 0, 8)
+    vs.SetBelowItem(dlg, sKindLbl, sDevChk, 0, 0)
+    vs.SetBelowItem(dlg, sDevChk, sCircChk, 0, 0)
+    vs.SetBelowItem(dlg, sCircChk, sOtherChk, 0, 0)
+    vs.SetBelowItem(dlg, sOtherChk, sCaseChk, 0, 8)
+    vs.SetBelowItem(dlg, sCaseChk, sWholeChk, 0, 0)
+    vs.SetBelowItem(dlg, sWholeChk, sInternalChk, 0, 0)
+    vs.SetBelowItem(dlg, sInternalChk, sNoteTxt, 0, 10)
+
+    def handler(item, data):
+        if item == kSetup:
+            vs.SelectChoice(dlg, sScopePopup, SCOPE_DOCUMENT, True)
+            # Devices and circuits carry what people search for; the rest is
+            # opt-in so a search does not drown in socket rows.
+            vs.SetBooleanItem(dlg, sDevChk, True)
+            vs.SetBooleanItem(dlg, sCircChk, True)
+            vs.SetBooleanItem(dlg, sOtherChk, False)
+            vs.SetBooleanItem(dlg, sCaseChk, False)
+            vs.SetBooleanItem(dlg, sWholeChk, False)
+            vs.SetBooleanItem(dlg, sInternalChk, False)
+        elif item == kOK:
+            kinds = set()
+            if vs.GetBooleanItem(dlg, sDevChk):
+                kinds.add('device')
+            if vs.GetBooleanItem(dlg, sCircChk):
+                kinds.add('circuit')
+            if vs.GetBooleanItem(dlg, sOtherChk):
+                kinds.update(('socket', 'equipment', 'panel', 'panelconnector'))
+            chosen.update({
+                'term': vs.GetItemText(dlg, sTermEdit) or '',
+                'scope': vs.GetSelectedChoiceIndex(dlg, sScopePopup, 0),
+                'kinds': kinds,
+                'case': vs.GetBooleanItem(dlg, sCaseChk),
+                'whole': vs.GetBooleanItem(dlg, sWholeChk),
+                'internal': vs.GetBooleanItem(dlg, sInternalChk),
+            })
+
+    if vs.RunLayoutDialog(dlg, handler) != kOK or not chosen:
+        return None
+    return chosen
+
+
+def show_search_results(hits, term, capped):
+    """List the hits. Returns True if the user asked to select them."""
+    shown = hits[:SEARCH_DISPLAY_CAP]
+    dlg = vs.CreateLayout('Search Results', False, 'Select in drawing', 'Close')
+
+    heading = '{} match(es) for "{}"'.format(len(hits), term)
+    if capped:
+        heading += '  -- showing the first {}; the report has them all'.format(
+            SEARCH_DISPLAY_CAP)
+    vs.CreateStaticText(dlg, rCountTxt, heading, -1)
+    vs.CreateLB(dlg, rLB, 118, 24)
+    vs.CreateStaticText(
+        dlg, rHintTxt,
+        '"Select in drawing" selects every matching object, so Fit to '
+        'Selection\nwill take you to them. A full CSV is written either way.', -1)
+
+    vs.SetFirstLayoutItem(dlg, rCountTxt)
+    vs.SetBelowItem(dlg, rCountTxt, rLB, 0, 0)
+    vs.SetBelowItem(dlg, rLB, rHintTxt, 0, 8)
+
+    def handler(item, data):
+        if item == kSetup:
+            vs.InsertLBColumn(dlg, rLB, RCOL_OBJECT, 'Object', 90)
+            vs.InsertLBColumn(dlg, rLB, RCOL_LABEL, 'Which one', 260)
+            vs.InsertLBColumn(dlg, rLB, RCOL_FIELD, 'Field', 150)
+            vs.InsertLBColumn(dlg, rLB, RCOL_VALUE, 'Value', 260)
+            vs.InsertLBColumn(dlg, rLB, RCOL_LAYER, 'Layer', 110)
+            vs.ShowLBHeader(dlg, rLB, True)
+            vs.EnableLBColumnLines(dlg, rLB, True)
+            vs.EnableLBSingleLineSelection(dlg, rLB, True)
+            # Off for the same reason as the vocabulary table: sorting
+            # invalidates every stored row index.
+            vs.EnableLBSorting(dlg, rLB, False)
+
+            vs.EnableLBUpdates(dlg, rLB, False)
+            for index, hit in enumerate(shown):
+                vs.InsertLBItem(dlg, rLB, index, hit['record'])
+                vs.SetLBItemInfo(dlg, rLB, index, RCOL_LABEL, hit['label'], -1)
+                vs.SetLBItemInfo(dlg, rLB, index, RCOL_FIELD, hit['field'], -1)
+                vs.SetLBItemInfo(dlg, rLB, index, RCOL_VALUE, hit['value'], -1)
+                vs.SetLBItemInfo(dlg, rLB, index, RCOL_LAYER, hit['layer'], -1)
+            vs.EnableLBUpdates(dlg, rLB, True)
+            vs.RefreshLB(dlg, rLB)
+
+    return vs.RunLayoutDialog(dlg, handler) == kOK
+
+
+def select_hits(hits):
+    """Select every matched object. Returns how many were selected."""
+    try:
+        vs.DSelectAll()
+    except Exception:
+        pass
+    seen = set()
+    for hit in hits:
+        handle = hit['handle']
+        if handle in seen:
+            continue
+        seen.add(handle)
+        try:
+            vs.SetSelect(handle)
+        except Exception:
+            pass
+    return len(seen)
+
+
+def tool_search():
+    """Returns (status, summary)."""
+    asked = ask_search()
+    if asked is None:
+        return 'cancelled', None
+    if not asked['kinds']:
+        vs.AlrtDialog('No object types were ticked, so there is nothing to '
+                      'search.')
+        return 'stopped', 'no object types selected'
+
+    term = asked['term']
+    if not term and not asked['whole']:
+        vs.AlrtDialog('Nothing to find.\n\nType something, or tick "Match the '
+                      'whole field" to list fields that are empty.')
+        return 'stopped', 'no search term'
+
+    handles = collect_scope(asked['scope'])
+    _walked, parents = walk_document(with_parents=True)
+    hits = search_objects(term, handles, asked['kinds'], parents,
+                          asked['case'], asked['whole'], asked['internal'])
+
+    if not hits:
+        vs.AlrtDialog('No matches for "{}".'.format(term))
+        return 'done', 'no matches for "{}"'.format(term)
+
+    rows = [['Object', 'Which one', 'Field', 'Value', 'Layer']]
+    for hit in hits:
+        rows.append([hit['record'], hit['label'], hit['field'], hit['value'],
+                     hit['layer']])
+    path = save_csv('search', rows)
+
+    capped = len(hits) > SEARCH_DISPLAY_CAP
+    objects = len(set(h['handle'] for h in hits))
+    if show_search_results(hits, term, capped):
+        selected = select_hits(hits)
+        vs.AlrtDialog('{} object(s) selected.\n\nFull results:\n{}'.format(
+            selected, path))
+    summary = '{} match(es) in {} object(s)\n{}'.format(len(hits), objects, path)
+    return 'done', summary
+
+
 # ─── Preferences dialog ──────────────────────────────────────────────────────
 #
 # Item numbers are in the 600s; every other dialog in this file has its own
@@ -5555,6 +5871,7 @@ lRefChk = 311
 lProbeChk = 312
 lPromptChk, lJobChk = 313, 314
 lPrefsChk, lSetupLbl = 315, 316
+lSearchChk = 317
 lOrderTxt, lHintTxt = 308, 309
 
 
@@ -5572,6 +5889,7 @@ def ask_which_tools():
     vs.CreateCheckBox(dlg, lNormChk, 'Normalise Names  (uppercase / trim)')
     vs.CreateCheckBox(dlg, lMatchChk, 'Match Names and Display Tags')
     vs.CreateCheckBox(dlg, lSpellChk, 'Spell Check')
+    vs.CreateCheckBox(dlg, lSearchChk, 'Search ConnectCAD Objects  (read-only)')
     vs.CreateCheckBox(dlg, lJobChk, 'Draw schematic job  (writes)')
 
     vs.CreateStaticText(dlg, lSetupLbl, 'Setup and diagnostics:', -1)
@@ -5594,7 +5912,8 @@ def ask_which_tools():
     vs.SetBelowItem(dlg, lToolLbl, lNormChk, 0, 0)
     vs.SetBelowItem(dlg, lNormChk, lMatchChk, 0, 0)
     vs.SetBelowItem(dlg, lMatchChk, lSpellChk, 0, 0)
-    vs.SetBelowItem(dlg, lSpellChk, lJobChk, 0, 0)
+    vs.SetBelowItem(dlg, lSpellChk, lSearchChk, 0, 0)
+    vs.SetBelowItem(dlg, lSearchChk, lJobChk, 0, 0)
     vs.SetBelowItem(dlg, lJobChk, lSetupLbl, 0, 10)
     vs.SetBelowItem(dlg, lSetupLbl, lPrefsChk, 0, 0)
     vs.SetBelowItem(dlg, lPrefsChk, lPromptChk, 0, 0)
@@ -5618,6 +5937,7 @@ def ask_which_tools():
             vs.SetBooleanItem(dlg, lPromptChk, False)
             vs.SetBooleanItem(dlg, lJobChk, False)
             vs.SetBooleanItem(dlg, lPrefsChk, False)
+            vs.SetBooleanItem(dlg, lSearchChk, False)
         elif item == kOK:
             picked = []
             # Fixed order, independent of which boxes the user ticked first.
@@ -5625,6 +5945,8 @@ def ask_which_tools():
             # should mean the job is drawn with the settings just saved.
             if vs.GetBooleanItem(dlg, lPrefsChk):
                 picked.append(TOOL_PREFS)
+            if vs.GetBooleanItem(dlg, lSearchChk):
+                picked.append(TOOL_SEARCH)
             if vs.GetBooleanItem(dlg, lDumpChk):
                 picked.append(TOOL_DUMP)
             if vs.GetBooleanItem(dlg, lNormChk):
@@ -5658,6 +5980,7 @@ TOOL_RUNNERS = [
     (TOOL_PROMPT, 'Export prompt'),
     (TOOL_JOB, 'Draw schematic job'),
     (TOOL_PREFS, 'Preferences'),
+    (TOOL_SEARCH, 'Search'),
 ]
 
 
@@ -5688,6 +6011,7 @@ def run_cc_tools():
         TOOL_PROMPT: tool_export_prompt,
         TOOL_JOB: tool_draw_job,
         TOOL_PREFS: tool_preferences,
+        TOOL_SEARCH: tool_search,
     }
     names = dict((tool, name) for tool, name in TOOL_RUNNERS)
 

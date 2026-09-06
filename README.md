@@ -16,6 +16,7 @@ The launcher is split in two: the tools used while drafting, and the ones used w
 | **Normalise Names** | UPPERCASE and/or trim names and display tags, keeping all linked objects in sync. |
 | **Match Names and Display Tags** | Finds objects whose Name and Display Tag disagree and lets you choose which one wins — in bulk, or one at a time. |
 | **Spell Check** | Finds likely typos in free-text fields, and doubles as a reviewable find-and-replace across every ConnectCAD object. |
+| **Search ConnectCAD Objects** | Read-only. Searches **every field** of every ConnectCAD object — the ones Vectorworks' own Find and Replace cannot see. Selects the matches in the drawing. |
 | **Draw schematic job** | Opens a file dialog, then builds the devices and wiring from the job file Claude gave you. |
 | **Preferences** | Column spacing, row spacing, gap between sections, circuit line mode, device label symbol. |
 | **Export prompt for Claude** | Read-only. Writes a profile of how this drawing is built, to hand Claude so new work matches it. |
@@ -24,6 +25,33 @@ The launcher is split in two: the tools used while drafting, and the ones used w
 Normalise runs before Match on purpose: uppercasing and trimming collapses every case-only and whitespace-only mismatch (`amp1` vs `AMP1`), so Match only asks about pairs that genuinely differ. Spell Check runs last, once every name has settled. Preferences run first, so ticking them alongside **Draw schematic job** draws with the settings you just saved.
 
 Preferences are kept in `~/Documents/CC Tools/preferences.json`, which you can edit directly. Spacing is in printed inches and is scaled by the layer, so a job drawn on a 1:2 layer keeps its proportions.
+
+### Search, and what Find and Replace can't reach
+
+Vectorworks' Find and Replace does not look inside plug-in object records, which
+is where a ConnectCAD drawing keeps everything worth finding: cable names,
+signals, makes and models, endpoint caches, room and rack references. Search
+walks every field of every ConnectCAD object instead.
+
+It is read-only — it finds and selects, never edits. That separation is
+deliberate: it means Search can safely cover fields that would be dangerous to
+rewrite, like the endpoint caches and dropdown values Spell Check leaves alone.
+
+Two options earn their keep on real drawings:
+
+- **Match the whole field** compares the entire value rather than looking
+  inside it. With an empty search box it lists every *blank* field — which is
+  how you find a circuit whose destination was never set.
+- **Include internal fields** exposes ConnectCAD's own bookkeeping
+  (`__ISNEW`, control points). Hidden by default, because there are hundreds of
+  them and they bury everything else.
+
+A search for a value with a trailing space finds the sort of thing nothing else
+will: names link by exact string, so `SPK 3.04 US FILL HR LOWER ` and
+`SPK 3.04 US FILL HR LOWER` are two different devices, and on screen they look
+identical.
+
+Results go to a timestamped CSV whether or not you select them.
 
 ### Spell Check, and why it isn't just a dictionary
 
