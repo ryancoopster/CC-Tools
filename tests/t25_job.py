@@ -68,10 +68,10 @@ bad = {
 write_job(m, bad)
 job, problems = m.read_job()
 text = ' | '.join(problems)
-check('T3 duplicate name reported', 'both named' in text, text)
+check('T3 duplicate id reported', 'share the id' in text, text)
 check('T3 nameless device reported', 'no name' in text, text)
-check('T3 circuit to an unknown device reported', 'not in the device list' in text,
-      text)
+check('T3 circuit to an unknown device reported',
+      'not a device id' in text, text)
 check('T3 circuit missing an end reported', 'no "to" device' in text, text)
 check('T3 all four found together', len(problems) >= 4, repr(problems))
 

@@ -66,6 +66,8 @@ because the rules below determine those.
 | `column` | no | Horizontal position, 0 upwards. Signal flows left to right, so sources are column 0. |
 | `row` | no | Vertical position, 0 downwards. Coarse — for separating unrelated chains. |
 | `align_to` | no | Sets the vertical position precisely. See below. |
+| `section` | no | Which band of the drawing this block belongs in. See **Sections**. |
+| `id` | no | Unique handle for this block. Defaults to `name`; **required** when a device appears in more than one section. Circuits reference this. |
 | `x`, `y` | no | Explicit drawing units, overriding `column`/`row`. Rarely what you want. |
 
 ### Sockets
@@ -80,8 +82,49 @@ because the rules below determine those.
 
 ### Circuits
 
-`from` and `to` each name a `device` and a `socket`, both of which must exist in
-the device list. `signal` is the circuit label, e.g. `MILAN PRI`.
+`from` and `to` each name a `device` — by its **id** — and a `socket`, both of
+which must exist in the device list.
+
+| Key | Meaning |
+|---|---|
+| `signal` | The circuit's own signal, e.g. `MILAN PRI`. **Not** the same as the sockets' signal: a real drawing joins two `LAN` sockets with a `MILAN PRI` circuit. Real values in use: `LINE`, `PWR`, `MILAN PRI`, `MILAN SEC`, `MIDC`, `AES`, `OPT`, `DANTE`, `LAN`. |
+| `cable` | A short human-readable name for the run, drawn along the middle of the line. Write one for every circuit — this is a design decision, and it is the label a person reads off the drawing. Keep it short enough to sit on a line. |
+
+Do **not** set a wire number. ConnectCAD numbers wires itself, by signal type,
+and a second scheme fighting it makes a mess.
+
+## Sections
+
+These drawings divide **one** design layer into horizontal bands by signal
+type and location — analog in one band, power in another, speakers in another —
+and sheet viewports crop each band onto its own drawing.
+
+Give each device a `section`. Put the sections in the order you want them down
+the page:
+
+```json
+"sections": [{"name": "Analog — Stage"}, {"name": "Power — Stage"}],
+"devices": [ ... ]
+```
+
+Two rules follow from bands being separate regions:
+
+**A circuit may not cross sections.** It could never be wired, because the two
+ends are nowhere near each other. The job will be rejected.
+
+**A device that belongs in two sections is drawn twice** — once per section —
+and each copy needs its own `id`. Keep the `name` identical; that is what makes
+them the same ConnectCAD device. This is the normal case: a speaker appears in
+the speaker section carrying its network feed, and again in the power section
+carrying its mains.
+
+```json
+{"id": "spk1-net",   "name": "SPK 1.01 HL ARRAY 1", "section": "Network", ...},
+{"id": "spk1-power", "name": "SPK 1.01 HL ARRAY 1", "section": "Power",   ...}
+```
+
+Then a circuit says `{"device": "spk1-power", "socket": "AC IN"}` — unambiguous,
+where the bare name would not have been.
 
 ---
 
@@ -109,7 +152,9 @@ drawing's grid size, and you don't.
 
 Alignment chains: if speaker 2 aligns to the switch, speaker 3 can align to
 speaker 2. Something in each chain must be positioned by `column`/`row` alone,
-or there is no fixed point to measure from.
+or there is no fixed point to measure from. Alignment works **within** a
+section only — bands are stacked afterwards, so aligning across them is
+meaningless and is reported as an error.
 
 **A device can only be aligned once.** If a device is fed from two different
 sources, you can only line up one of those circuits. Align the one that matters
@@ -132,9 +177,13 @@ half the wiring is missing.
 
 Check each of these, because each one produces a silently wrong drawing:
 
-- [ ] Every device `name` is unique.
+- [ ] Every device `id` is unique. Repeated `name`s are fine and expected;
+      repeated ids are not.
+- [ ] Every circuit references devices by **id**, not by name.
+- [ ] No circuit crosses a section boundary.
 - [ ] Every `socket` named in a circuit exists on that device, spelled the same.
 - [ ] Every circuit's destination has an `align_to` back to its source (or you
       have told the user which ones you could not align).
+- [ ] Every circuit has a `cable` name.
 - [ ] The JSON parses.
 - [ ] It is offered as a **downloadable file**, not a code block.

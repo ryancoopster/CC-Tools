@@ -53,7 +53,17 @@ Still to do:
   the socket list when no symbol exists, so a hand-built device still gets its
   real connectors rather than invented ones.
 
-## Drawing preferences## Drawing preferences## Drawing preferences
+## Drawing preferences
+
+**Done.** `CC Tools > Preferences` writes `~/Documents/CC Tools/preferences.json`
+and covers column spacing, row spacing, section gap, circuit line mode and the
+device label symbol. Spacing is in printed inches and is scaled by the layer.
+
+Still open: the label-symbol field is a free-text box, because the list of
+symbols ConnectCAD ships has not been confirmed against this install, and the
+header height a different label symbol produces would move every socket.
+
+Original note:
 
 Generated objects currently take whatever ConnectCAD defaults to. Two choices
 should be the user's, not the tool's:

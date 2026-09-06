@@ -77,6 +77,7 @@ TOOL_REFERENCE = 4
 TOOL_PROBE     = 5
 TOOL_PROMPT    = 6
 TOOL_JOB       = 7
+TOOL_PREFS     = 8
 
 kOK    = 1
 kSetup = 12255
@@ -3107,6 +3108,15 @@ def build_reference(handles):
             'layer': layer_name(h),
             'sockets': device_local_sockets(h),
         })
+        # Position matters as much as topology here. ConnectCAD wires by
+        # horizontal alignment, and these drawings divide one layer into bands
+        # by signal type -- neither is visible in a list of devices and
+        # circuits, so an export without coordinates teaches what connects to
+        # what but not how a schematic is actually arranged.
+        box = bounds(h)
+        if box:
+            devices[-1]['x'] = round((box[0] + box[2]) / 2.0, 4)
+            devices[-1]['y'] = round(box[3], 4)      # the top edge, as jobs use
 
     for h in handles:
         if classify(h) != 'circuit':
@@ -3119,6 +3129,11 @@ def build_reference(handles):
             'signal': read_field(h, 'Signal'),
             'label': read_field(h, 'Label'),
             'number': read_field(h, 'Number'),
+            # The human-readable name drawn along the middle of the line, and
+            # the routing style. Both are house convention, which is the whole
+            # point of exporting a reference.
+            'cable': read_field(h, CIRCUIT_CABLE_FIELD),
+            'line_mode': read_field(h, CIRCUIT_TYPE_FIELD),
             'from': source,
             'to': destination,
         }
@@ -4144,14 +4159,109 @@ def tool_creation_probe():
 # It also makes the whole thing reviewable. The job is a file you can read
 # before a single object is created.
 
+# ─── Drawing preferences ─────────────────────────────────────────────────────
+#
+# Generated objects used to take whatever the tool hard-coded. These are the
+# choices that are genuinely the drawing's rather than the tool's, so they live
+# in a file the user can edit and a dialog they can set.
+#
+# Kept as ONE flat JSON file rather than per-document settings because a job is
+# often drawn into a fresh file: the conventions belong to the drafter, not to
+# whichever document happens to be open.
+
+PREFS_FILE = 'preferences.json'
+
+# Every value the tool will read, with the value it uses when the file is
+# missing, unreadable, or missing that key. The spacing figures are PRINTED
+# INCHES and are scaled by the layer like everything else.
+PREF_DEFAULTS = {
+    'column_inches': 4.0,       # horizontal pitch between device columns
+    'row_inches': 2.5,          # vertical pitch between device rows
+    'section_gap_inches': 3.0,  # blank space between signal sections
+    'circuit_type': '',         # '' = leave ConnectCAD's own default alone
+    'label_symbol': '',         # '' = leave ConnectCAD's own default alone
+}
+
+# Values ConnectCAD accepts for Circuit.CircuitType. Taken from a real drawing
+# (which uses 'rounded') plus the plug-in's own strings; '' means "do not touch
+# it", which is the safe default for a field we did not set.
+CIRCUIT_TYPES = ['', 'rounded', 'polyline', 'direct', 'orthogonal']
+
+# Numeric preferences, with the range each is clamped to. A zero column pitch
+# would stack every device in one place, and a huge one would scatter a job
+# across a mile of drawing, so both ends are bounded.
+PREF_RANGES = {
+    'column_inches': (0.25, 240.0),
+    'row_inches': (0.25, 240.0),
+    'section_gap_inches': (0.0, 240.0),
+}
+
+
+def prefs_path():
+    return os.path.join(BASE_FOLDER, PREFS_FILE)
+
+
+def load_prefs():
+    """Read the preferences file, falling back to defaults per key.
+
+    A corrupt or partial file must never stop the tool running: anything that
+    will not parse, or any value out of range, silently reverts to the default
+    for that key alone rather than discarding the whole file."""
+    import json
+    prefs = dict(PREF_DEFAULTS)
+    try:
+        with open(prefs_path(), 'r', encoding='utf-8') as f:
+            stored = json.load(f)
+    except Exception:
+        return prefs
+    if not isinstance(stored, dict):
+        return prefs
+
+    for key, default in PREF_DEFAULTS.items():
+        if key not in stored:
+            continue
+        value = stored[key]
+        if isinstance(default, bool):
+            if not isinstance(value, bool):
+                continue
+        elif isinstance(default, float):
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                continue
+            low, high = PREF_RANGES.get(key, (None, None))
+            if low is not None and not (low <= value <= high):
+                continue
+        elif not isinstance(value, str):
+            continue
+        prefs[key] = value
+    return prefs
+
+
+def save_prefs(prefs):
+    """Write the preferences file. Returns the path, or None if it failed."""
+    import json
+    try:
+        os.makedirs(BASE_FOLDER, exist_ok=True)
+        with open(prefs_path(), 'w', encoding='utf-8') as f:
+            json.dump(dict((k, prefs.get(k, v))
+                           for k, v in PREF_DEFAULTS.items()), f, indent=2)
+        return prefs_path()
+    except Exception:
+        return None
+
+
 JOB_FILE = 'schematic_job.json'
 PROMPT_FILE = 'schematic_prompt.txt'
 
 # Devices are laid out on a column grid. ConnectCAD wires by horizontal
 # alignment, so a schematic's layout IS its wiring -- devices that talk to each
 # other belong in adjacent columns at compatible heights.
-JOB_COLUMN_INCHES = 4.0
-JOB_ROW_INCHES = 2.5
+#
+# These are the fallbacks used when preferences cannot be read; the live values
+# come from load_prefs().
+JOB_COLUMN_INCHES = PREF_DEFAULTS['column_inches']
+JOB_ROW_INCHES = PREF_DEFAULTS['row_inches']
 
 
 JOB_FORMAT = '''{
@@ -4284,6 +4394,115 @@ def validate_job_path(path):
     if os.path.isdir(path):
         return None, 'That is a folder, not a job file:\n{}'.format(path)
     return path, path
+
+
+# ─── Preferences dialog ──────────────────────────────────────────────────────
+#
+# Item numbers are in the 600s; every other dialog in this file has its own
+# hundred (100s normalise, 200s match, 300s launcher, 400s spell, 500s vocab).
+
+pColLbl, pColEdit = 604, 605
+pRowLbl, pRowEdit = 606, 607
+pGapLbl, pGapEdit = 608, 609
+pTypeLbl, pTypePopup = 610, 611
+pLabelLbl, pLabelEdit = 612, 613
+pNote = 614
+
+
+def read_number(dialog, item, current, key):
+    """One edit field back as a number, clamped, falling back to `current`.
+
+    A field left blank or filled with nonsense keeps the value that was in it
+    rather than resetting to a default -- silently changing a spacing the user
+    did not touch would be worse than ignoring what they typed."""
+    try:
+        value = float((vs.GetItemText(dialog, item) or '').strip())
+    except (TypeError, ValueError):
+        return current
+    low, high = PREF_RANGES.get(key, (None, None))
+    if low is not None and not (low <= value <= high):
+        return current
+    return value
+
+
+def tool_preferences():
+    """Returns (status, summary)."""
+    prefs = load_prefs()
+    chosen = {}
+
+    dialog = vs.CreateLayout('CC Tools Preferences', False, 'Save', 'Cancel')
+
+    vs.CreateStaticText(dialog, pColLbl, 'Column spacing (inches):', -1)
+    vs.CreateEditText(dialog, pColEdit, '{:g}'.format(prefs['column_inches']), 10)
+    vs.CreateStaticText(dialog, pRowLbl, 'Row spacing (inches):', -1)
+    vs.CreateEditText(dialog, pRowEdit, '{:g}'.format(prefs['row_inches']), 10)
+    vs.CreateStaticText(dialog, pGapLbl, 'Gap between sections (inches):', -1)
+    vs.CreateEditText(dialog, pGapEdit,
+                      '{:g}'.format(prefs['section_gap_inches']), 10)
+
+    vs.CreateStaticText(dialog, pTypeLbl, 'Circuit line mode:', -1)
+    vs.CreatePullDownMenu(dialog, pTypePopup, 18)
+    for name in CIRCUIT_TYPES:
+        vs.AddChoice(dialog, pTypePopup, name or '(leave as ConnectCAD sets it)', -1)
+
+    vs.CreateStaticText(dialog, pLabelLbl, 'Device label symbol:', -1)
+    vs.CreateEditText(dialog, pLabelEdit, prefs['label_symbol'], 22)
+
+    vs.CreateStaticText(
+        dialog, pNote,
+        'Spacing is in printed inches and is scaled by the layer, so a job\n'
+        'drawn on a 1:2 layer keeps the same proportions.\n\n'
+        'Sections are laid out as bands down the drawing, in the order the\n'
+        'job lists them. Leave the label symbol blank to keep ConnectCAD\'s.', -1)
+
+    vs.SetFirstLayoutItem(dialog, pColLbl)
+    vs.SetRightItem(dialog, pColLbl, pColEdit, 0, 0)
+    vs.SetBelowItem(dialog, pColLbl, pRowLbl, 0, 0)
+    vs.SetRightItem(dialog, pRowLbl, pRowEdit, 0, 0)
+    vs.SetBelowItem(dialog, pRowLbl, pGapLbl, 0, 0)
+    vs.SetRightItem(dialog, pGapLbl, pGapEdit, 0, 0)
+    vs.SetBelowItem(dialog, pGapLbl, pTypeLbl, 0, 8)
+    vs.SetRightItem(dialog, pTypeLbl, pTypePopup, 0, 0)
+    vs.SetBelowItem(dialog, pTypeLbl, pLabelLbl, 0, 0)
+    vs.SetRightItem(dialog, pLabelLbl, pLabelEdit, 0, 0)
+    vs.SetBelowItem(dialog, pLabelLbl, pNote, 0, 10)
+
+    def handler(item, data):
+        if item == kSetup:
+            current = prefs.get('circuit_type', '')
+            index = CIRCUIT_TYPES.index(current) if current in CIRCUIT_TYPES else 0
+            vs.SelectChoice(dialog, pTypePopup, index, True)
+        elif item == kOK:
+            picked = vs.GetSelectedChoiceIndex(dialog, pTypePopup, 0)
+            chosen.update({
+                'column_inches': read_number(dialog, pColEdit,
+                                             prefs['column_inches'],
+                                             'column_inches'),
+                'row_inches': read_number(dialog, pRowEdit, prefs['row_inches'],
+                                          'row_inches'),
+                'section_gap_inches': read_number(dialog, pGapEdit,
+                                                  prefs['section_gap_inches'],
+                                                  'section_gap_inches'),
+                'circuit_type': (CIRCUIT_TYPES[picked]
+                                 if 0 <= picked < len(CIRCUIT_TYPES) else ''),
+                'label_symbol': (vs.GetItemText(dialog, pLabelEdit) or '').strip(),
+            })
+
+    if vs.RunLayoutDialog(dialog, handler) != kOK or not chosen:
+        return 'cancelled', None
+
+    path = save_prefs(chosen)
+    if path is None:
+        vs.AlrtDialog('Could not write preferences to:\n{}'.format(prefs_path()))
+        return 'stopped', 'preferences could not be saved'
+
+    summary = ('columns {:g}"  rows {:g}"  section gap {:g}"'.format(
+        chosen['column_inches'], chosen['row_inches'],
+        chosen['section_gap_inches']))
+    if chosen['circuit_type']:
+        summary += '  line mode {}'.format(chosen['circuit_type'])
+    vs.AlrtDialog('Preferences saved to:\n{}\n\n{}'.format(path, summary))
+    return 'done', summary
 
 
 # ─── Export a prompt ─────────────────────────────────────────────────────────
@@ -4421,7 +4640,9 @@ def read_job(path=None):
         problems.append('No "devices" list in the job.')
         return None, problems
 
-    names = {}
+    # Keyed by ID, not name. A physical device is drawn again in each section
+    # it appears in, so names repeat by design; ids are what must be unique.
+    ids = {}
     for index, device in enumerate(devices):
         if not isinstance(device, dict):
             problems.append('Device {} is not an object.'.format(index))
@@ -4430,35 +4651,94 @@ def read_job(path=None):
         if not name:
             problems.append('Device {} has no name.'.format(index))
             continue
-        if name in names:
-            problems.append('Two devices are both named "{}". Names are the '
-                            'link key, so they must differ.'.format(name))
-        names[name] = device
+        ident = job_device_id(device)
+        if ident in ids:
+            problems.append('Two devices share the id "{}". Give the repeats '
+                            'their own "id" -- the same device drawn in two '
+                            'sections needs one id each, so circuits can say '
+                            'which they mean.'.format(ident))
+        ids[ident] = device
 
     for index, circuit in enumerate(job.get('circuits') or []):
         if not isinstance(circuit, dict):
             problems.append('Circuit {} is not an object.'.format(index))
             continue
+        ends = []
         for end in ('from', 'to'):
             side = circuit.get(end)
             if not isinstance(side, dict) or not side.get('device'):
                 problems.append('Circuit {} has no "{}" device.'.format(index, end))
                 continue
-            if side['device'] not in names:
-                problems.append('Circuit {} connects to "{}", which is not in '
-                                'the device list.'.format(index, side['device']))
+            if side['device'] not in ids:
+                problems.append('Circuit {} connects to "{}", which is not a '
+                                'device id in this job.'.format(
+                                    index, side['device']))
+                continue
+            ends.append(ids[side['device']])
+
+        # A circuit is wired by horizontal alignment, and sections are separate
+        # bands of the drawing. One that spans two of them cannot ever wire.
+        if len(ends) == 2:
+            first = (ends[0].get('section') or '').strip()
+            second = (ends[1].get('section') or '').strip()
+            if first != second:
+                problems.append(
+                    'Circuit {} runs from section "{}" to section "{}". '
+                    'Sections are separate regions of the drawing, so a '
+                    'circuit across them cannot be wired -- draw the device '
+                    'again in the other section instead.'.format(
+                        index, first or '(none)', second or '(none)'))
     return job, problems
 
 
 # ─── Draw a job ──────────────────────────────────────────────────────────────
-def job_position(device, gx, gy):
-    """Where a job device sits, from explicit coordinates or a column/row grid.
+def job_device_id(device):
+    """How a job refers to this device.
+
+    A physical device is drawn again in each section it appears in -- a speaker
+    shows up in the speaker section AND in the power section -- so device NAMES
+    legitimately repeat within one job. The id is what circuits point at, and
+    it is what has to be unique. It defaults to the name, so a job with no
+    repeats never has to mention ids at all."""
+    explicit = (device.get('id') or '').strip()
+    if explicit:
+        return explicit
+    return (device.get('name') or '').strip()
+
+
+def job_sections(job):
+    """Section names in the order they should be laid out, top to bottom.
+
+    An explicit "sections" list fixes the order; otherwise sections appear in
+    the order their first device does. Devices with no section all land in one
+    unnamed section, which is what an unsectioned job is."""
+    order = []
+    listed = job.get('sections')
+    if isinstance(listed, list):
+        for entry in listed:
+            name = entry.get('name') if isinstance(entry, dict) else entry
+            name = (name or '').strip()
+            if name and name not in order:
+                order.append(name)
+    for device in job.get('devices') or []:
+        if not isinstance(device, dict):
+            continue
+        name = (device.get('section') or '').strip()
+        if name not in order:
+            order.append(name)
+    return order
+
+
+def job_position(device, gx, gy, prefs=None):
+    """Where a job device sits within its section, before sections are stacked.
 
     The y is the device's TOP edge, so devices written at the same y line up
     along their headers whatever their socket counts.
 
     ConnectCAD wires by horizontal alignment, so position is not decoration --
     it is how the schematic says what connects to what."""
+    if prefs is None:
+        prefs = PREF_DEFAULTS
     try:
         if device.get('x') is not None and device.get('y') is not None:
             return float(device['x']), float(device['y'])
@@ -4474,8 +4754,27 @@ def job_position(device, gx, gy):
         row = 0
     unit_x = gx if gx else 0.25
     unit_y = gy if gy else 0.25
-    return (column * JOB_COLUMN_INCHES / 0.25 * unit_x,
-            -row * JOB_ROW_INCHES / 0.25 * unit_y)
+    column_pitch = prefs.get('column_inches', JOB_COLUMN_INCHES)
+    row_pitch = prefs.get('row_inches', JOB_ROW_INCHES)
+    return (column * column_pitch / 0.25 * unit_x,
+            -row * row_pitch / 0.25 * unit_y)
+
+
+def job_socket_specs(device):
+    """The job's sockets as the builder's (symbol, name, type, side) tuples."""
+    specs = []
+    for socket in device.get('sockets') or []:
+        if not isinstance(socket, dict):
+            continue
+        name = (socket.get('name') or '').strip()
+        if not name:
+            continue
+        side_text = (socket.get('side') or '').strip().upper()
+        side = -1 if side_text.startswith('L') else 1
+        symbol = 'skt_L' if side < 0 else 'skt_R'
+        specs.append((symbol, name, (socket.get('type') or 'IO').upper(), side,
+                      socket.get('signal') or '', socket.get('connector') or ''))
+    return specs
 
 
 def socket_stack_index(device, socket_name):
@@ -4499,93 +4798,122 @@ def socket_stack_index(device, socket_name):
     return None, None
 
 
-def resolve_job_positions(job, gx, gy, upi=1.0, scale=1.0):
-    """Where every device goes. Returns ({name: (x, y)}, notes).
+def align_within_section(devices, positions, upi, scale, gy):
+    """Apply every align_to inside ONE section. Returns notes.
 
     ConnectCAD only wires sockets that sit at the same height, so a job whose
     y values are a few hundredths out draws a schematic with no circuits in
     it. Rather than ask whoever writes the job to do grid arithmetic in their
-    head, a device can say "align_to": which of its sockets should line up
-    with which socket on another device. The y is then computed from the same
-    socket pitch the drawing code uses, so the two cannot disagree.
+    head, a device says which of its sockets should line up with which socket
+    on another device, and the y is computed from the same socket pitch the
+    drawing code uses -- so the two cannot disagree.
 
-    Alignment chains -- speaker 3 may align to speaker 2 -- so this resolves
-    in dependency order, and reports anything it cannot resolve rather than
-    silently leaving a device where it first landed."""
-    by_name = {}
-    for device in job['devices']:
-        name = (device.get('name') or '').strip()
-        if name:
-            by_name[name] = device
-
-    positions = {}
+    Alignment chains, so this resolves in dependency order and reports what it
+    cannot resolve rather than silently leaving a device at the wrong height."""
+    by_id = dict((job_device_id(d), d) for d in devices)
     notes = []
-    for name, device in by_name.items():
-        positions[name] = job_position(device, gx, gy)
 
-    pending = [n for n, d in by_name.items() if isinstance(d.get('align_to'), dict)]
-    settled = set(by_name) - set(pending)
+    pending = [i for i, d in by_id.items() if isinstance(d.get('align_to'), dict)]
+    settled = set(by_id) - set(pending)
 
-    # Chains resolve outwards from devices that are already fixed. Each pass
-    # must settle at least one device or the rest are unreachable.
     while pending:
         progressed = []
-        for name in pending:
-            device = by_name[name]
+        for ident in pending:
+            device = by_id[ident]
             spec = device['align_to']
             target = (spec.get('device') or '').strip()
-            if target not in by_name:
-                notes.append('{}: align_to names "{}", which is not in the '
-                             'job. Left where it was.'.format(name, target))
-                progressed.append(name)
+            if target not in by_id:
+                notes.append('{}: align_to names "{}", which is not in this '
+                             'section. Left where it was.'.format(ident, target))
+                progressed.append(ident)
                 continue
             if target not in settled:
                 continue
-            their_index, _their_side = socket_stack_index(
-                by_name[target], spec.get('socket'))
-            my_index, _my_side = socket_stack_index(device, spec.get('my_socket'))
+            their_index, _s = socket_stack_index(by_id[target], spec.get('socket'))
+            my_index, _s = socket_stack_index(device, spec.get('my_socket'))
             if their_index is None or my_index is None:
                 missing = spec.get('socket') if their_index is None \
                     else spec.get('my_socket')
                 notes.append('{}: align_to refers to socket "{}", which does '
-                             'not exist. Left where it was.'.format(
-                                 name, missing))
-                progressed.append(name)
+                             'not exist. Left where it was.'.format(ident, missing))
+                progressed.append(ident)
                 continue
-            x, _y = positions[name]
+            x, _y = positions[ident]
             _tx, ty = positions[target]
-            positions[name] = (
+            positions[ident] = (
                 x,
                 ty - socket_drop(their_index, upi, scale, gy)
                 + socket_drop(my_index, upi, scale, gy))
-            progressed.append(name)
+            progressed.append(ident)
 
         if not progressed:
-            for name in pending:
+            for ident in pending:
                 notes.append('{}: align_to cannot be resolved -- the chain it '
                              'is part of has no fixed starting point, or loops '
-                             'back on itself. Left where it was.'.format(name))
+                             'back on itself. Left where it was.'.format(ident))
             break
         settled.update(progressed)
-        pending = [n for n in pending if n not in progressed]
+        pending = [i for i in pending if i not in progressed]
+    return notes
+
+
+def section_extent(devices, positions, upi, scale, gy):
+    """(top, bottom) of one section's devices, headers and bodies included."""
+    top = None
+    bottom = None
+    for device in devices:
+        x, y = positions[job_device_id(device)]
+        height = body_height_for(job_socket_specs(device), upi, scale, gy)
+        top = y if top is None else max(top, y)
+        bottom = (y - height) if bottom is None else min(bottom, y - height)
+    return (top or 0.0), (bottom or 0.0)
+
+
+def resolve_job_positions(job, gx, gy, upi=1.0, scale=1.0, prefs=None):
+    """Where every device goes. Returns ({id: (x, y)}, notes).
+
+    Sections are laid out as horizontal BANDS down the same design layer, which
+    is how these drawings are actually organised: analog, power and speaker
+    each get their own region of one "Schematic" layer, and sheet viewports
+    crop them onto separate drawings.
+
+    Each section is resolved independently against its own origin, then the
+    bands are stacked with a gap. That ordering matters -- a section's depth is
+    not known until its alignment is resolved, so the stacking cannot happen
+    first."""
+    if prefs is None:
+        prefs = load_prefs()
+
+    by_section = {}
+    for device in job['devices']:
+        if not isinstance(device, dict):
+            continue
+        by_section.setdefault((device.get('section') or '').strip(),
+                              []).append(device)
+
+    positions = {}
+    notes = []
+    for device in job['devices']:
+        if isinstance(device, dict):
+            positions[job_device_id(device)] = job_position(device, gx, gy, prefs)
+
+    gap = prefs.get('section_gap_inches', PREF_DEFAULTS['section_gap_inches'])
+    running_top = 0.0
+    for section in job_sections(job):
+        devices = by_section.get(section)
+        if not devices:
+            continue
+        notes.extend(align_within_section(devices, positions, upi, scale, gy))
+
+        top, bottom = section_extent(devices, positions, upi, scale, gy)
+        shift = running_top - top
+        if shift:
+            for device in devices:
+                ident = job_device_id(device)
+                x, y = positions[ident]
+                positions[ident] = (x, y + shift)
+        running_top = (bottom + shift) - gap
     return positions, notes
-
-
-def job_socket_specs(device):
-    """The job's sockets as the builder's (symbol, name, type, side) tuples."""
-    specs = []
-    for socket in device.get('sockets') or []:
-        if not isinstance(socket, dict):
-            continue
-        name = (socket.get('name') or '').strip()
-        if not name:
-            continue
-        side_text = (socket.get('side') or '').strip().upper()
-        side = -1 if side_text.startswith('L') else 1
-        symbol = 'skt_L' if side < 0 else 'skt_R'
-        specs.append((symbol, name, (socket.get('type') or 'IO').upper(), side,
-                      socket.get('signal') or '', socket.get('connector') or ''))
-    return specs
 
 
 def build_job_devices(job, log, upi, scale, grid):
@@ -4595,24 +4923,32 @@ def build_job_devices(job, log, upi, scale, grid):
     layout and reproduces a device somebody already drew correctly."""
     gx, gy = grid if grid else (None, None)
     catalogue = device_symbol_catalogue()
+    prefs = load_prefs()
     made = {}
 
-    positions, notes = resolve_job_positions(job, gx, gy, upi, scale)
+    positions, notes = resolve_job_positions(job, gx, gy, upi, scale, prefs)
     for note in notes:
         log.append('  WARN    {}'.format(note))
 
+    current_section = None
     for device in job['devices']:
         name = (device.get('name') or '').strip()
+        ident = job_device_id(device)
         tag = (device.get('tag') or name).strip()
         make = device.get('make') or ''
         model = device.get('model') or ''
-        x, y = positions.get(name) or job_position(device, gx, gy)
+        x, y = positions.get(ident) or job_position(device, gx, gy, prefs)
+
+        section = (device.get('section') or '').strip()
+        if section != current_section:
+            current_section = section
+            log.append('  ---- section: {}'.format(section or '(unsectioned)'))
 
         match = find_device_symbol(make, model, catalogue)
         if match:
             handle = place_device_from_symbol(match['handle'], x, y, name, tag)
             if handle:
-                made[name] = handle
+                made[ident] = handle
                 log.append('  symbol  {:<30} from {}'.format(
                     name[:30], match['symbol']))
                 continue
@@ -4626,12 +4962,60 @@ def build_job_devices(job, log, upi, scale, grid):
         handle, ok = build_device(name, tag, make, model, x, y, specs, log,
                                   upi, scale, grid)
         if handle:
-            made[name] = handle
+            made[ident] = handle
             log.append('  built   {:<30} {} socket(s){}'.format(
                 name[:30], len(specs), '' if ok else '  (some sockets failed)'))
         else:
             log.append('  FAIL    {:<30} could not be created'.format(name[:30]))
     return made
+
+
+# Circuit fields worth setting on a generated circuit. Confirmed against a
+# real drawing's field dump -- note ConnectCAD's own field names, which are
+# plain words here and underscored elsewhere on the same record.
+CIRCUIT_SIGNAL_FIELD = 'Signal'
+CIRCUIT_CABLE_FIELD = 'Cable'        # human-readable cable name, drawn mid-line
+CIRCUIT_LABEL_FIELD = 'Label'
+CIRCUIT_TYPE_FIELD = 'CircuitType'   # line routing mode; a real job uses 'rounded'
+
+
+def finish_circuit(handle, circuit, prefs):
+    """Write the job's own values onto a circuit ConnectSelected just made.
+
+    ConnectCAD derives a circuit's endpoints from the sockets it joined, but
+    NOT its signal: a real drawing carries socket signal 'LAN' on a circuit
+    whose own signal is 'MILAN PRI'. So a generated circuit keeps whatever
+    default it was given unless the job says otherwise, which is why this
+    exists.
+
+    The Number field is deliberately NOT touched. ConnectCAD numbers wires
+    itself, by signal type; writing our own numbers would fight it and produce
+    two competing schemes in one drawing.
+
+    Returns the fields it actually wrote."""
+    written = []
+    values = [
+        (CIRCUIT_SIGNAL_FIELD, (circuit.get('signal') or '').strip()),
+        (CIRCUIT_CABLE_FIELD, (circuit.get('cable') or '').strip()),
+        (CIRCUIT_LABEL_FIELD, (circuit.get('label') or '').strip()),
+    ]
+
+    line_mode = (prefs.get('circuit_type') or '').strip()
+    if line_mode:
+        values.append((CIRCUIT_TYPE_FIELD, line_mode))
+
+    for field, value in values:
+        if not value:
+            continue
+        resolved = resolve_field(handle, [field]) or field
+        if write_field(handle, resolved, value):
+            written.append(field)
+    if written:
+        try:
+            vs.ResetObject(handle)
+        except Exception:
+            pass
+    return written
 
 
 def wire_job(job, made, log):
@@ -4640,10 +5024,23 @@ def wire_job(job, made, log):
     ConnectSelected joins every aligned socket pair between two devices at
     once, so it is run once per device PAIR rather than once per circuit.
     Whether a circuit exists afterwards is decided by reading the association
-    back -- the command returning cleanly proves nothing."""
+    back -- the command returning cleanly proves nothing.
+
+    Verification COUNTS rather than matching one-to-one. Circuits in the
+    drawing record device NAMES, and the same physical device is drawn again in
+    each section it appears in, so a name can identify two different blocks. If
+    a job asks for two circuits that both read back as
+    "SPK 1.01 / LAN_IN 1 -> SWTCH 4.01 / LAN 1", finding one of them is not
+    enough; finding two is. Matching on identity alone would call the second
+    one wired because the first exists."""
     circuits = job.get('circuits') or []
     if not circuits:
         return 0, []
+
+    names = {}
+    for device in job['devices']:
+        if isinstance(device, dict):
+            names[job_device_id(device)] = (device.get('name') or '').strip()
 
     pairs = []
     for circuit in circuits:
@@ -4673,27 +5070,46 @@ def wire_job(job, made, log):
     except Exception:
         pass
 
-    # What exists now, read from the stored associations.
-    actual = set()
+    def endpoint_key(a_dev, a_skt, b_dev, b_skt):
+        """Order-independent, so a circuit read back the other way still matches."""
+        return tuple(sorted([(a_dev or '', a_skt or ''), (b_dev or '', b_skt or '')]))
+
+    # What exists now, read from the stored associations. Handles are kept, not
+    # just counted, because each job circuit's signal, wire number and cable
+    # name still have to be written onto the object ConnectSelected made.
+    actual = {}
     for handle in walk_document():
         if classify(handle) != 'circuit':
             continue
         source, destination = circuit_endpoints(handle)
         if not source or not destination:
             continue
-        actual.add((source.get('device'), source.get('socket'),
-                    destination.get('device'), destination.get('socket')))
-        actual.add((destination.get('device'), destination.get('socket'),
-                    source.get('device'), source.get('socket')))
+        key = endpoint_key(source.get('device'), source.get('socket'),
+                           destination.get('device'), destination.get('socket'))
+        actual.setdefault(key, []).append(handle)
 
+    prefs = load_prefs()
     missing = []
+    finished = 0
     for circuit in circuits:
         source = circuit.get('from') or {}
         destination = circuit.get('to') or {}
-        key = (source.get('device'), source.get('socket'),
-               destination.get('device'), destination.get('socket'))
-        if key not in actual:
+        key = endpoint_key(names.get(source.get('device')), source.get('socket'),
+                           names.get(destination.get('device')),
+                           destination.get('socket'))
+        found = actual.get(key)
+        if found:
+            # Spend it, so a second identical-looking circuit needs a second
+            # real one rather than matching the same object twice.
+            handle = found.pop(0)
+            if finish_circuit(handle, circuit, prefs):
+                finished += 1
+        else:
             missing.append((circuit, 'no circuit found between these sockets'))
+
+    if finished:
+        log.append('  {} circuit(s) given their signal and cable name'.format(
+            finished))
     return len(circuits) - len(missing), missing
 
 
@@ -5109,6 +5525,7 @@ lDumpChk, lNormChk, lMatchChk, lSpellChk = 305, 306, 307, 310
 lRefChk = 311
 lProbeChk = 312
 lPromptChk, lJobChk = 313, 314
+lPrefsChk, lSetupLbl = 315, 316
 lOrderTxt, lHintTxt = 308, 309
 
 
@@ -5119,33 +5536,43 @@ def ask_which_tools():
     chosen = {}
     dlg = vs.CreateLayout('CC Tools', False, 'Continue', 'Cancel')
 
-    vs.CreateStaticText(dlg, lToolLbl, 'Run:', -1)
-    vs.CreateCheckBox(dlg, lDumpChk, 'Dump Fields  (diagnostic, read-only)')
+    # Two groups: the tools used while drafting, and the ones used when
+    # setting a drawing up or working out why something went wrong. The second
+    # group is where a tool goes when it is not part of anyone's daily work.
+    vs.CreateStaticText(dlg, lToolLbl, 'Drafting:', -1)
     vs.CreateCheckBox(dlg, lNormChk, 'Normalise Names  (uppercase / trim)')
     vs.CreateCheckBox(dlg, lMatchChk, 'Match Names and Display Tags')
     vs.CreateCheckBox(dlg, lSpellChk, 'Spell Check')
-    vs.CreateCheckBox(dlg, lRefChk, 'Export Reference Schematic')
-    vs.CreateCheckBox(dlg, lProbeChk, 'Creation Probe  (writes - scratch file only)')
-    vs.CreateCheckBox(dlg, lPromptChk, 'Export prompt for Claude')
     vs.CreateCheckBox(dlg, lJobChk, 'Draw schematic job  (writes)')
+
+    vs.CreateStaticText(dlg, lSetupLbl, 'Setup and diagnostics:', -1)
+    vs.CreateCheckBox(dlg, lPrefsChk, 'Preferences  (spacing, circuit line mode)')
+    vs.CreateCheckBox(dlg, lPromptChk, 'Export prompt for Claude')
+    vs.CreateCheckBox(dlg, lDumpChk, 'Dump Fields  (read-only)')
+    vs.CreateCheckBox(dlg, lRefChk, 'Export Reference Schematic  (read-only)')
+    vs.CreateCheckBox(dlg, lProbeChk, 'Creation Probe  (writes - scratch file only)')
+
     vs.CreateStaticText(
         dlg, lOrderTxt,
-        'Run in this order. Normalising first resolves case- and space-only\n'
-        'mismatches, so Match only asks about genuinely different pairs, and\n'
-        'Spell Check then sees the settled spelling of every name.', -1)
+        'Run in this order. Preferences are saved first, so a job drawn in\n'
+        'the same run uses them. Normalising before Match resolves case- and\n'
+        'space-only mismatches, so Match only asks about genuinely different\n'
+        'pairs, and Spell Check then sees the settled spelling of every name.', -1)
     vs.CreateStaticText(
         dlg, lHintTxt, 'Reports are written to ~/Documents/CC Tools/', -1)
 
     vs.SetFirstLayoutItem(dlg, lToolLbl)
-    vs.SetBelowItem(dlg, lToolLbl, lDumpChk, 0, 0)
-    vs.SetBelowItem(dlg, lDumpChk, lNormChk, 0, 0)
+    vs.SetBelowItem(dlg, lToolLbl, lNormChk, 0, 0)
     vs.SetBelowItem(dlg, lNormChk, lMatchChk, 0, 0)
     vs.SetBelowItem(dlg, lMatchChk, lSpellChk, 0, 0)
-    vs.SetBelowItem(dlg, lSpellChk, lRefChk, 0, 0)
+    vs.SetBelowItem(dlg, lSpellChk, lJobChk, 0, 0)
+    vs.SetBelowItem(dlg, lJobChk, lSetupLbl, 0, 10)
+    vs.SetBelowItem(dlg, lSetupLbl, lPrefsChk, 0, 0)
+    vs.SetBelowItem(dlg, lPrefsChk, lPromptChk, 0, 0)
+    vs.SetBelowItem(dlg, lPromptChk, lDumpChk, 0, 0)
+    vs.SetBelowItem(dlg, lDumpChk, lRefChk, 0, 0)
     vs.SetBelowItem(dlg, lRefChk, lProbeChk, 0, 0)
-    vs.SetBelowItem(dlg, lProbeChk, lPromptChk, 0, 0)
-    vs.SetBelowItem(dlg, lPromptChk, lJobChk, 0, 0)
-    vs.SetBelowItem(dlg, lJobChk, lOrderTxt, 0, 8)
+    vs.SetBelowItem(dlg, lProbeChk, lOrderTxt, 0, 10)
     vs.SetBelowItem(dlg, lOrderTxt, lHintTxt, 0, 8)
 
     def handler(item, data):
@@ -5161,9 +5588,14 @@ def ask_which_tools():
             vs.SetBooleanItem(dlg, lProbeChk, False)
             vs.SetBooleanItem(dlg, lPromptChk, False)
             vs.SetBooleanItem(dlg, lJobChk, False)
+            vs.SetBooleanItem(dlg, lPrefsChk, False)
         elif item == kOK:
             picked = []
             # Fixed order, independent of which boxes the user ticked first.
+            # Preferences lead: ticking them alongside Draw schematic job
+            # should mean the job is drawn with the settings just saved.
+            if vs.GetBooleanItem(dlg, lPrefsChk):
+                picked.append(TOOL_PREFS)
             if vs.GetBooleanItem(dlg, lDumpChk):
                 picked.append(TOOL_DUMP)
             if vs.GetBooleanItem(dlg, lNormChk):
@@ -5196,6 +5628,7 @@ TOOL_RUNNERS = [
     (TOOL_PROBE, 'Creation Probe'),
     (TOOL_PROMPT, 'Export prompt'),
     (TOOL_JOB, 'Draw schematic job'),
+    (TOOL_PREFS, 'Preferences'),
 ]
 
 
@@ -5225,6 +5658,7 @@ def run_cc_tools():
         TOOL_PROBE: tool_creation_probe,
         TOOL_PROMPT: tool_export_prompt,
         TOOL_JOB: tool_draw_job,
+        TOOL_PREFS: tool_preferences,
     }
     names = dict((tool, name) for tool, name in TOOL_RUNNERS)
 
