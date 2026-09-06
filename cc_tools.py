@@ -3465,21 +3465,36 @@ def probe_make_device(name, x, y, width, height, socket_specs, log,
     return device, made == len(socket_specs)
 
 
+MM_PER_INCH = 25.4
+GETUNITS_UPI_INDEX = 3        # identified from a real document, see below
+
+
 def units_per_inch():
     """How many document units make an inch, and how that was decided.
 
-    Deliberately NOT guessed from GetUnits. Its return carries several values
-    and picking the plausible-looking one produced 25.0 on a drawing whose unit
-    is the inch, multiplying every socket drop by 25 and scattering them down
-    the sheet.
+    GetUnits returns a tuple whose shape a real document settled:
+        [0]=25  [1]=3  [2]=2  [3]=1.0  [4]='\"'  [5]=' sq ft'
+    Index 3 is units-per-inch -- 1.0 alongside an inch unit mark. Taken by
+    INDEX rather than by picking whichever value looks plausible, which is how
+    25 was once mistaken for it and multiplied every distance by 25.
 
-    The default is 1.0 -- one document unit is one inch -- which is what a
-    Vectorworks drawing set in inches reports, and what the geometry confirms:
-    a device block measures 3.0 x 1.4 units, which is inches for a schematic
-    symbol and absurd as millimetres.
-
-    Override in the config file if you draw in metric; the probe logs the raw
-    GetUnits values so the right one can be identified rather than guessed."""
+    Sanity-checked and defaulted to 1.0, since a wrong conversion here scales
+    the whole drawing rather than failing visibly."""
+    getter = getattr(vs, 'GetUnits', None)
+    if getter is not None:
+        try:
+            result = getter()
+        except Exception:
+            result = None
+        if isinstance(result, (list, tuple)) and len(result) > GETUNITS_UPI_INDEX:
+            try:
+                value = float(result[GETUNITS_UPI_INDEX])
+            except (TypeError, ValueError):
+                value = 0.0
+            # 1 for inches, 25.4 for millimetres, 2.54 for centimetres.
+            if 0.1 <= value <= 1000:
+                return value, 'GetUnits()[{}] = {:g}'.format(
+                    GETUNITS_UPI_INDEX, value)
     return 1.0, 'assuming 1 unit = 1 inch'
 
 
@@ -3550,14 +3565,25 @@ def group_inventory(group, log_prefix='  '):
     return out
 
 
-def schematic_grid():
+def mm_to_units(millimetres, upi):
+    """Convert a millimetre length into document units.
+
+    Correct whatever the document works in: at 1 unit per inch a 6.35 mm grid
+    becomes 0.25 units; at 25.4 units per inch it stays 6.35."""
+    return millimetres * (upi or 1.0) / MM_PER_INCH
+
+
+def schematic_grid(upi=1.0):
     """The schematic grid (gx, gy), and where it came from.
 
     ConnectCAD reads SchematicsGridX / SchematicsGridY off the 'ConnectCAD
     Settings...' record format and falls back to the document's own grid
-    preferences (selectors 78 and 79). This follows the same order, so a
-    drawing with a customised schematic grid lays out the way ConnectCAD
-    would lay it out."""
+    preferences (selectors 78 and 79). This follows the same order.
+
+    THE VALUES ARE MILLIMETRES, whatever the document's units are: a 0.25"
+    grid reads as 6.35. Using them as document units made every device 25
+    times too big. They are converted here, and both figures are reported
+    so the conversion is checkable rather than assumed."""
     record = 'ConnectCAD Settings...'
     try:
         handle = vs.GetObject(record)
@@ -3568,17 +3594,20 @@ def schematic_grid():
             gx = float(vs.GetRField(handle, record, 'SchematicsGridX'))
             gy = float(vs.GetRField(handle, record, 'SchematicsGridY'))
             if gx > 0 and gy > 0:
-                return gx, gy, 'ConnectCAD Settings record'
+                return (mm_to_units(gx, upi), mm_to_units(gy, upi),
+                        'ConnectCAD Settings record, {:g} x {:g} mm'.format(gx, gy))
         except (TypeError, ValueError, Exception):
             pass
     try:
         gx = float(vs.GetPrefReal(78))
         gy = float(vs.GetPrefReal(79))
         if gx > 0 and gy > 0:
-            return gx, gy, 'document grid preferences (78/79)'
+            return (mm_to_units(gx, upi), mm_to_units(gy, upi),
+                    'grid preferences 78/79, {:g} x {:g} mm'.format(gx, gy))
     except Exception:
         pass
-    return (GRID_FALLBACK, GRID_FALLBACK,
+    fallback = GRID_FALLBACK * upi
+    return (fallback, fallback,
             'grid unreadable; assuming {}"'.format(GRID_FALLBACK))
 
 
@@ -3861,8 +3890,9 @@ def active_layer_context(log):
     log.append('  layer scale  {}'.format(scale_note))
     log.append('  units        {:.4f} unit(s) per inch  ({})'.format(upi, upi_note))
     log.append('  GetUnits()   {}'.format(raw_units_report()))
-    gx, gy, grid_note = schematic_grid()
-    log.append('  grid         {:.4f} x {:.4f}  ({})'.format(gx, gy, grid_note))
+    gx, gy, grid_note = schematic_grid(upi)
+    log.append('  grid         {:.4f} x {:.4f} drawing units  ({})'.format(
+        gx, gy, grid_note))
     log.append('  spacing      {} grid unit(s) to the first socket, then 1 each'
                ' = {:.4f} / {:.4f} drawing units'.format(
                    GRID_TOP_SPACE_UNITS + 1, socket_drop(0, upi, scale, gy), gy))

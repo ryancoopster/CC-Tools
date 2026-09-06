@@ -594,12 +594,18 @@ check('T23 by the stated margin',
 m24, vs24 = load(Doc([[dev('x')]]))
 
 vs24.GetObject = lambda n: 'REC' if n == 'ConnectCAD Settings...' else None
-vs24.GetRField = lambda h, r, f: {'SchematicsGridX': '0.25',
-                                  'SchematicsGridY': '0.25'}.get(f, '')
-gx, gy, note = m24.schematic_grid()
-check('T24 grid read from the ConnectCAD settings record',
-      (gx, gy) == (0.25, 0.25), repr((gx, gy, note)))
+# ConnectCAD stores the grid in MILLIMETRES whatever the document uses:
+# a 0.25" grid reads as 6.35. Using it raw made every device 25x too big.
+vs24.GetRField = lambda h, r, f: {'SchematicsGridX': '6.35',
+                                  'SchematicsGridY': '6.35'}.get(f, '')
+gx, gy, note = m24.schematic_grid(1.0)
+check('T24 a 6.35 mm grid becomes 0.25 inch units',
+      abs(gx - 0.25) < 1e-9 and abs(gy - 0.25) < 1e-9, repr((gx, gy, note)))
 check('T24 and the source is named', 'ConnectCAD Settings' in note, repr(note))
+check('T24 the raw millimetres are reported too', '6.35' in note, repr(note))
+check('T24 a millimetre document keeps 6.35 units',
+      abs(m24.schematic_grid(25.4)[0] - 6.35) < 1e-6,
+      repr(m24.schematic_grid(25.4)))
 
 check('T24 first socket is two grid units down',
       m24.socket_drop(0, 1.0, 1.0, 0.25) == 0.5, repr(m24.socket_drop(0, 1.0, 1.0, 0.25)))
@@ -619,20 +625,49 @@ check('T24 minimum width is 6 grid spaces',
 
 # Falls back to the document grid preferences, then to a stated default.
 vs24.GetObject = lambda n: None
-vs24.GetPrefReal = lambda sel: {78: 0.5, 79: 0.5}.get(sel, 0)
-gx, gy, note = m24.schematic_grid()
-check('T24 falls back to grid preferences 78/79',
-      (gx, gy) == (0.5, 0.5) and '78/79' in note, repr((gx, gy, note)))
+vs24.GetPrefReal = lambda sel: {78: 12.7, 79: 12.7}.get(sel, 0)
+gx, gy, note = m24.schematic_grid(1.0)
+check('T24 falls back to grid preferences 78/79, also in mm',
+      abs(gx - 0.5) < 1e-9 and '78/79' in note, repr((gx, gy, note)))
 
 def no_pref(sel):
     raise RuntimeError('unavailable')
 vs24.GetPrefReal = no_pref
-gx, gy, note = m24.schematic_grid()
+gx, gy, note = m24.schematic_grid(1.0)
 check('T24 an unreadable grid is stated, not silently assumed',
       gx == m24.GRID_FALLBACK and 'unreadable' in note, repr(note))
 
 # Without a grid it still works, on the inch constants.
 check('T24 inch fallback preserved when no grid is known',
       m24.socket_drop(0, 1.0, 1.0, None) == 0.5)
+
+
+# ── T25: units-per-inch is taken by INDEX, from a known tuple shape ─────────
+# A real document returned [0]=25 [1]=3 [2]=2 [3]=1.0 [4]='"' [5]=' sq ft'.
+# Index 3 is units-per-inch. Picking whichever value looked plausible once
+# chose 25 and multiplied every distance by it.
+m25, vs25 = load(Doc([[dev('x')]]))
+vs25.GetUnits = lambda: (25, 3, 2, 1.0, '"', ' sq ft')
+upi, note = m25.units_per_inch()
+check('T25 index 3 is used, not the plausible-looking 25',
+      upi == 1.0, repr((upi, note)))
+check('T25 and the index is stated', '[3]' in note, repr(note))
+
+vs25.GetUnits = lambda: (25, 3, 2, 25.4, 'mm', ' sq m')
+check('T25 a millimetre document reads 25.4',
+      m25.units_per_inch()[0] == 25.4, repr(m25.units_per_inch()))
+
+vs25.GetUnits = lambda: (25, 3, 2, 0.0, '?', '?')
+check('T25 a nonsense value falls back to inches',
+      m25.units_per_inch()[0] == 1.0, repr(m25.units_per_inch()))
+
+vs25.GetUnits = lambda: (25, 3)
+check('T25 a short tuple falls back rather than indexing off the end',
+      m25.units_per_inch()[0] == 1.0, repr(m25.units_per_inch()))
+
+check('T25 mm converts correctly in an inch document',
+      abs(m25.mm_to_units(6.35, 1.0) - 0.25) < 1e-9)
+check('T25 and is a no-op in a millimetre document',
+      abs(m25.mm_to_units(6.35, 25.4) - 6.35) < 1e-6)
 
 R.report_and_exit()
