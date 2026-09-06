@@ -228,6 +228,9 @@ vs10.HMove = lambda h, dx, dy: moved.append((round(dx, 4), round(dy, 4)))
 
 # GetBBox reports top before bottom; bounds() must normalise that.
 vs10.GetBBox = lambda h: (-0.195, 0.142, 0.062, -0.063)
+# The insertion point is NOT the bbox centre: for skt_R the origin sits at the
+# connector, which is what lands on the device border.
+vs10.GetSymLoc = lambda h: (0.0, 0.0)
 socket = Obj('Socket', {})
 device_box = (-1.5, 0.0, 1.5, 1.4)          # left, bottom, right, top
 
@@ -236,15 +239,15 @@ check('T10 bounds normalises top/bottom order',
 
 m10.place_socket(socket, device_box, 1, 0, 1.0, 1.0, None)
 # socket centre is (-0.0665, 0.0395); target is the right edge, 0.5" below top
-check('T10 right socket lands on the right edge',
-      moved and abs(moved[-1][0] - (1.5 - -0.0665)) < 0.001, repr(moved))
+check('T10 right socket lands on the right edge by its insertion point',
+      moved and abs(moved[-1][0] - 1.5) < 0.001, repr(moved))
 check('T10 first socket sits half an inch below the HEADER',
-      moved and abs(moved[-1][1] - (-0.5 - 0.0395)) < 0.001, repr(moved))
+      moved and abs(moved[-1][1] - -0.5) < 0.001, repr(moved))
 
 moved[:] = []
 m10.place_socket(socket, device_box, -1, 0, 1.0, 1.0, None)
 check('T10 left socket lands on the left edge',
-      moved and abs(moved[-1][0] - (-1.5 - -0.0665)) < 0.001, repr(moved))
+      moved and abs(moved[-1][0] - -1.5) < 0.001, repr(moved))
 
 moved[:] = []
 check('T10 missing bounds is refused, not guessed',
@@ -277,6 +280,7 @@ group.children.append(socket12)
 # Body sits at local -1.5..1.5 x 0..1.4 regardless of where the device is.
 local = {id(body): (-1.5, 1.4, 1.5, 0.0), id(socket12): (-0.195, 0.142, 0.062, -0.063)}
 vs12.GetBBox = lambda h: local.get(id(h), (0.0, 0.0, 0.0, 0.0))
+vs12.GetSymLoc = lambda h: (0.0, 0.0)
 
 measured = m12.body_bounds(group)
 check('T12 body measured in the local frame',
@@ -286,9 +290,9 @@ check('T12 sockets excluded from the body measurement',
 
 m12.place_socket(socket12, measured, -1, 0, 1.0, 1.0, None)
 check('T12 left socket moves to the LOCAL left edge',
-      moved12 and abs(moved12[-1][0] - (-1.5 - -0.0665)) < 0.001, repr(moved12))
+      moved12 and abs(moved12[-1][0] - -1.5) < 0.001, repr(moved12))
 check('T12 vertical measured from the header baseline',
-      moved12 and abs(moved12[-1][1] - (-0.5 - 0.0395)) < 0.001, repr(moved12))
+      moved12 and abs(moved12[-1][1] - -0.5) < 0.001, repr(moved12))
 
 # The device's document position must not influence placement at all.
 moved12[:] = []
@@ -321,6 +325,7 @@ check('T13 scales with document units',
 moved13 = []
 vs13.HMove = lambda h, dx, dy: moved13.append(round(dy, 4))
 vs13.GetBBox = lambda h: (-1.5, 1.4, 1.5, -1.0)
+vs13.GetSymLoc = lambda h: (0.0, 0.0)
 sk = Obj('Socket', {})
 short_body = (-1.5, 0.0, 1.5, 1.4)
 tall_body = (-1.5, -6.0, 1.5, 1.4)
@@ -449,7 +454,8 @@ check('T18 sockets hang from local y = 0', m18.header_baseline(body18) == 0.0)
 
 moved18 = []
 vs18.HMove = lambda h, dx, dy: moved18.append(round(dy, 4))
-vs18.GetBBox = lambda h: (-0.13, 0.1, 0.13, -0.1)     # socket centred on origin
+vs18.GetBBox = lambda h: (-0.13, 0.1, 0.13, -0.1)
+vs18.GetSymLoc = lambda h: (0.0, 0.0)
 sk18 = Obj('Socket', {})
 for i in range(3):
     m18.place_socket(sk18, body18, 1, i, 1.0, 1.0, None)
@@ -669,5 +675,37 @@ check('T25 mm converts correctly in an inch document',
       abs(m25.mm_to_units(6.35, 1.0) - 0.25) < 1e-9)
 check('T25 and is a no-op in a millimetre document',
       abs(m25.mm_to_units(6.35, 25.4) - 6.35) < 1e-6)
+
+
+# ── T26: sockets align by INSERTION POINT, not bounding-box centre ──────────
+# ConnectCAD places a socket by its origin -- CreateSocketGroup calls
+# PlaceObjectFromSymbol(name, pen). Centring its bounding box instead offsets
+# it by half the socket's width, so the connector straddles the device border
+# instead of sitting on it.
+m26, vs26 = load(Doc([[dev('x')]]))
+sk26 = Obj('Socket', {})
+
+# A socket whose origin is NOT its bbox centre: the connector is at one end.
+vs26.GetBBox = lambda h: (0.0, 0.1, 0.5, -0.1)     # bbox centre x = 0.25
+vs26.GetSymLoc = lambda h: (0.5, 0.0)              # origin at the connector
+check('T26 insertion point preferred over bbox centre',
+      m26.insertion_point(sk26) == (0.5, 0.0), repr(m26.insertion_point(sk26)))
+
+moved26 = []
+vs26.HMove = lambda h, dx, dy: moved26.append((round(dx, 4), round(dy, 4)))
+m26.place_socket(sk26, (-1.5, -1.0, 1.5, 0.4), 1, 0, 1.0, 1.0, 0.25)
+check('T26 the ORIGIN lands on the border, not the bbox centre',
+      moved26 and abs(moved26[-1][0] - (1.5 - 0.5)) < 1e-6, repr(moved26))
+
+# Falling back to the bbox centre keeps it working where GetSymLoc is absent.
+del vs26.GetSymLoc
+check('T26 falls back to the bbox centre',
+      m26.insertion_point(sk26) == (0.25, 0.0), repr(m26.insertion_point(sk26)))
+
+def broken(h):
+    raise RuntimeError('no location')
+vs26.GetSymLoc = broken
+check('T26 a failing GetSymLoc falls back rather than crashing',
+      m26.insertion_point(sk26) == (0.25, 0.0))
 
 R.report_and_exit()

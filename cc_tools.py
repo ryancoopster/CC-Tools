@@ -3759,24 +3759,50 @@ def header_baseline(body_box):
     return 0.0
 
 
+def insertion_point(handle):
+    """An object's insertion point, or its bounding-box centre if unavailable.
+
+    Sockets are symbols, and ConnectCAD places them by their INSERTION POINT:
+    CreateSocketGroup calls PlaceObjectFromSymbol(name, pen), putting the
+    socket's origin on the pen. Centring its bounding box instead offsets it
+    by half the socket's width, so the connector straddles the device border
+    rather than landing on it."""
+    getter = getattr(vs, 'GetSymLoc', None)
+    if getter is not None:
+        try:
+            point = getter(handle)
+        except Exception:
+            point = None
+        if isinstance(point, (list, tuple)) and len(point) >= 2:
+            try:
+                return float(point[0]), float(point[1])
+            except (TypeError, ValueError):
+                pass
+    box = bounds(handle)
+    if not box:
+        return None
+    return (box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0
+
+
 def place_socket(socket, body_box, side, index, upi, scale=1.0, gy=None):
     """Move a socket onto the device body's edge at its place in the stack.
 
+    Aligned by INSERTION POINT, not bounding-box centre, so the connector sits
+    on the border the way ConnectCAD draws it rather than half in and half out.
+
     `body_box` must come from body_bounds -- the device's own bounds are in a
     different coordinate frame. `side` is -1 for the left edge, +1 for the
-    right. `index` is the socket's position on that side, 0 upwards; they hang
-    from the header on a fixed pitch rather than spreading across the block, so
-    a device keeps its spacing however tall it is."""
-    socket_box = bounds(socket)
-    if not socket_box or not body_box:
+    right. `index` is the socket's position on that side, 0 upwards; sockets
+    hang from the header on a fixed pitch rather than spreading across the
+    block, so a device keeps its spacing however tall it is."""
+    origin = insertion_point(socket)
+    if not origin or not body_box:
         return False
     left, _bottom, right, _top = body_box
-    centre_x = (socket_box[0] + socket_box[2]) / 2.0
-    centre_y = (socket_box[1] + socket_box[3]) / 2.0
     target_x = right if side > 0 else left
     target_y = header_baseline(body_box) - socket_drop(index, upi, scale, gy)
     try:
-        vs.HMove(socket, target_x - centre_x, target_y - centre_y)
+        vs.HMove(socket, target_x - origin[0], target_y - origin[1])
         return True
     except Exception:
         return False
@@ -3841,6 +3867,13 @@ def measure(device, group, log_prefix='  ', upi=None, scale=1.0):
                 centre_y = (sbox[1] + sbox[3]) / 2.0
                 drop_units = header_baseline(body) - centre_y
                 divisor = (upi or 1.0) * (scale or 1.0)
+                origin = insertion_point(handle)
+                if origin:
+                    edge = body[2] if origin[0] > 0 else body[0]
+                    out.append('{}info  socket {:<8} origin {:+.4f} from the '
+                               'border, {:.4f} below the header'.format(
+                                   log_prefix, name, origin[0] - edge,
+                                   header_baseline(body) - origin[1]))
                 out.append('{}info  socket {:<8} edge x {:+.3f}   {:.4f} units = '
                            '{:.3f}" below the header'.format(
                                log_prefix, name,
