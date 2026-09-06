@@ -204,3 +204,25 @@ live drawings is a liability, not an asset, and git remembers it.
 a PDF to a chat works, but nothing brings the reply back automatically. That is
 the one thing copy-paste genuinely cannot do. Recover it from history rather
 than rewriting it — but test it before trusting it, because it never was.
+
+
+## Stock symbol libraries — not searched, deliberately
+
+Investigated 2026-09-06 and abandoned on the evidence.
+
+`/Applications/Vectorworks 2026/Libraries/ConnectCAD/Device/` holds 346 entries.
+**345 are 10-byte `.vwx.proxy` placeholders** — Luminex, Meyer, Shure, Crestron,
+Extron, all of them — containing nothing but a numeric id. Exactly one real file
+had been downloaded (`Crest.vwx`), and the user library folder held none.
+Vectorworks fetches these on demand through the Resource Manager.
+
+So a tool that searched them would, on a normal install, find one manufacturer.
+
+Ryan's call, and the better design: **do not rely on stock symbols at all** —
+they are inconsistent between manufacturers even once downloaded. Look the
+device up instead, and keep the answer in a curated file so it stays consistent.
+That is `DEVICES.md`.
+
+Symbols already in the OPEN DOCUMENT are still used and still preferred. Those
+are house-made and demonstrably correct; the argument above is only about the
+stock libraries.

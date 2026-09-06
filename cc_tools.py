@@ -4993,6 +4993,145 @@ def tool_export_prompt():
         len(profile['device_models']), path)
 
 
+# ─── The golden device list ──────────────────────────────────────────────────
+#
+# A curated markdown file of devices and their real connectors, kept in
+# ~/Documents/CC Tools/devices.md and seeded from DEVICES.md in the repo.
+#
+# WHY THIS EXISTS, given ConnectCAD already ships a database of 2,734 devices:
+# consistency. The shipped data is uneven -- socket naming varies by
+# manufacturer, and 36 rows carry a double space in a name. A curated file is a
+# place to pin down how YOUR house draws a device, once, so every schematic
+# that uses it comes out the same.
+#
+# It is markdown, not JSON, for one reason that matters: the same file is
+# handed to Claude alongside JOB-SPEC.md. Claude reads the socket names from
+# it and writes circuits against them; the plug-in reads the same names and
+# builds the sockets. Both sides work from one source, so they cannot disagree.
+# A device NOT in this file is where a model would otherwise guess -- and that
+# is exactly when it should be looked up and added here instead.
+#
+# FORMAT -- a heading naming the device, then a table:
+#
+#     ## Meyer Sound | TIGRA-L
+#
+#     | Socket | Type | Signal | Connector | Side |
+#     |---|---|---|---|---|
+#     | LAN_IN 1 | IN | LAN | EC-6A | L |
+#
+# Columns are found by their HEADER NAME, not their position, so the order can
+# change and extra columns are ignored. Prose between entries is ignored too,
+# which is what makes it a document rather than a data file.
+
+GOLDEN_FILE = 'devices.md'
+GOLDEN_COLUMNS = ('socket', 'type', 'signal', 'connector', 'side')
+
+_golden_cache = {}
+
+
+def golden_path():
+    return os.path.join(BASE_FOLDER, GOLDEN_FILE)
+
+
+def split_table_row(line):
+    """Cells of one markdown table row, outer pipes discarded."""
+    line = line.strip()
+    if line.startswith('|'):
+        line = line[1:]
+    if line.endswith('|'):
+        line = line[:-1]
+    return [c.strip() for c in line.split('|')]
+
+
+def is_table_divider(line):
+    """The |---|---| line under a markdown header row."""
+    cells = split_table_row(line)
+    if not cells:
+        return False
+    return all(c and set(c) <= set('-: ') for c in cells)
+
+
+def parse_golden_devices(text):
+    """{(make, model): [socket dicts]} from the curated markdown.
+
+    Anything that is not a device heading followed by a table is ignored, so
+    the file can carry as much explanation as it needs to stay maintainable."""
+    devices = {}
+    current = None
+    header = None
+    for raw in text.split('\n'):
+        line = raw.strip()
+
+        if line.startswith('##') and '|' in line:
+            title = line.lstrip('#').strip()
+            make, _sep, model = title.partition('|')
+            make, model = make.strip(), model.strip()
+            current = {'make': make, 'model': model, 'sockets': []}
+            devices[(normalise_model(make), normalise_model(model))] = current
+            header = None
+            continue
+
+        if not line.startswith('|'):
+            if not line:
+                header = None
+            continue
+        if current is None:
+            continue
+
+        cells = split_table_row(line)
+        if header is None:
+            lowered = [c.lower() for c in cells]
+            if 'socket' in lowered:
+                header = lowered
+            continue
+        if is_table_divider(line):
+            continue
+
+        row = {}
+        for name in GOLDEN_COLUMNS:
+            row[name] = (cells[header.index(name)].strip()
+                         if name in header and header.index(name) < len(cells)
+                         else '')
+        if row['socket']:
+            current['sockets'].append(row)
+    return devices
+
+
+def load_golden_devices():
+    """The curated list, or {} if the user has not installed one."""
+    if _golden_cache:
+        return _golden_cache
+    try:
+        with open(golden_path(), 'r', encoding='utf-8') as f:
+            _golden_cache.update(parse_golden_devices(f.read()))
+    except Exception:
+        pass
+    return _golden_cache
+
+
+def golden_socket_specs(entry):
+    """A curated device's sockets as builder specs."""
+    specs = []
+    for row in entry['sockets']:
+        name = (row.get('socket') or '').strip()
+        if not name:
+            continue
+        side = -1 if (row.get('side') or '').strip().upper().startswith('L') else 1
+        specs.append(('skt_L' if side < 0 else 'skt_R', name,
+                      (row.get('type') or 'IO').upper(), side,
+                      (row.get('signal') or '').strip(),
+                      (row.get('connector') or '').strip()))
+    return specs
+
+
+def find_golden_device(make, model):
+    """The curated entry for a make/model, or None."""
+    if not model:
+        return None
+    return load_golden_devices().get((normalise_model(make),
+                                      normalise_model(model)))
+
+
 # ─── ConnectCAD's shipped device database ────────────────────────────────────
 #
 # 2,734 real devices with their real socket sets. Looking a make/model up here
@@ -5400,12 +5539,17 @@ def device_height(device, upi, scale, gy, catalogue=None):
     specs = job_socket_specs(device)
     if not specs:
         # Same precedence the builder uses, or a device whose sockets come from
-        # the database gets measured as if it had none and the section below
-        # it overlaps.
-        entry = find_db_device(device.get('make') or '',
-                               device.get('model') or '')
+        # a lookup gets measured as if it had none and the section below it
+        # overlaps.
+        make = device.get('make') or ''
+        model = device.get('model') or ''
+        entry = find_golden_device(make, model)
         if entry:
-            specs = db_socket_specs(entry)
+            specs = golden_socket_specs(entry)
+        else:
+            entry = find_db_device(make, model)
+            if entry:
+                specs = db_socket_specs(entry)
     return body_height_for(specs, upi, scale, gy)
 
 
@@ -5519,6 +5663,19 @@ def build_job_devices(job, log, upi, scale, grid):
         specs = job_socket_specs(device)
         source = 'job'
         if not specs:
+            # The curated list first: it is the one place house convention is
+            # pinned down, and it is the same file Claude read when it wrote
+            # the job, so the socket names on both sides agree by construction.
+            entry = find_golden_device(make, model)
+            if entry:
+                specs = golden_socket_specs(entry)
+                source = 'curated list'
+                log.append('  golden  {:<30} {} / {}: {} socket(s)'.format(
+                    name[:30], entry['make'], entry['model'], len(specs)))
+                log.append('          sockets: {}'.format(
+                    ', '.join(s[1] for s in specs[:16])
+                    + (' ...' if len(specs) > 16 else '')))
+        if not specs:
             entry = find_db_device(make, model)
             if entry:
                 specs = db_socket_specs(entry)
@@ -5532,8 +5689,9 @@ def build_job_devices(job, log, upi, scale, grid):
                     ', '.join(s[1] for s in specs[:16])
                     + (' ...' if len(specs) > 16 else '')))
         if not specs:
-            log.append('  WARN    {:<30} no symbol, no sockets listed, and '
-                       'not in the device database'.format(name[:30]))
+            log.append('  WARN    {:<30} no symbol, no sockets listed, and in '
+                       'neither the curated list nor the device '
+                       'database'.format(name[:30]))
         handle, ok = build_device(name, tag, make, model, x, y, specs, log,
                                   upi, scale, grid)
         if handle:

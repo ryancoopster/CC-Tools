@@ -70,16 +70,27 @@ because the rules below determine those.
 | `id` | no | Unique handle for this block. Defaults to `name`; **required** when a device appears in more than one section. Circuits reference this. |
 | `x`, `y` | no | Explicit drawing units, overriding `column`/`row`. Rarely what you want. |
 
-**If you know the real make and model, give them and omit `sockets`.** CC Tools
-ships with ConnectCAD's device database — 2,734 devices with their actual
-connector sets — and will use it. A Shure ULXD4Q gets the sockets Shure gave
-it, which is better than any guess.
+### Where socket lists should come from
 
-The catch: you then don't know the socket names, so you can't write circuits
-against them. Do one or the other per device — either give `sockets` yourself
-and reference those names in circuits, or give only make/model and leave that
-device unwired for the user to connect. Don't guess names for a device you
-didn't list sockets for.
+**Never invent connectors.** In order of preference:
+
+1. **`DEVICES.md`, the curated device list** — if the user attached it, and the
+   device is in it, use exactly the socket names it gives. The plug-in reads
+   the same file, so your circuits and its sockets will match by construction.
+   This is the best case and the one to aim for.
+2. **Look the device up properly** if it is not in that file — the
+   manufacturer's real connector set — and say clearly in your reply that you
+   did, and what you found. Suggest the user add it to `DEVICES.md` so the next
+   schematic comes out the same. Include the markdown table for them to paste;
+   the format is at the top of that file.
+3. **Give only make and model, and omit `sockets`.** CC Tools falls back to
+   ConnectCAD's shipped database of 2,734 devices. The catch: you then do not
+   know the socket names, so you cannot write circuits against them — leave
+   that device unwired and say so.
+
+What you must not do is guess socket names for a device you did not look up.
+A wrong name draws a schematic that wires nothing, and it looks fine until
+somebody checks.
 
 ### Sockets
 

@@ -6,9 +6,11 @@ back a file.
 
 ## The flow
 
-1. **Give Claude [`JOB-SPEC.md`](JOB-SPEC.md).** Drag the file into a new Claude
-   conversation (claude.ai or the desktop app). That one file teaches it the
-   format and the rules. Do this once per conversation.
+1. **Give Claude [`JOB-SPEC.md`](JOB-SPEC.md) and [`DEVICES.md`](DEVICES.md).**
+   Drag both into a new Claude conversation (claude.ai or the desktop app).
+   The first teaches it the format and the rules; the second tells it the real
+   connectors of devices you use, so it does not invent any. Do this once per
+   conversation.
 2. **Describe what you want.** Plain English. *"A Luminex 10i-IP feeding four
    Meyer TIGRA-L arrays over Milan primary, one array per output."* Go back and
    forth until the design is right — this is the part worth spending time on.
@@ -18,6 +20,25 @@ back a file.
    Pick the file you just downloaded. It draws.
 
 Undo works normally if the result isn't what you wanted.
+
+## The curated device list
+
+[`DEVICES.md`](DEVICES.md) holds devices and their real connectors. **Copy it to
+`~/Documents/CC Tools/devices.md`** — that is where the plug-in reads it from —
+and hand the same file to Claude.
+
+Both sides then work from one source: Claude writes circuits against the socket
+names in it, and the plug-in builds those exact sockets. They cannot disagree,
+which is the whole point.
+
+It ships seeded from the Geffen Hall drawing — 28 devices, whitespace
+normalised. Add to it whenever a schematic needs a device it does not cover;
+that is the moment a model would otherwise guess.
+
+CC Tools falls back to ConnectCAD's own database of 2,734 devices for anything
+not in the file. Stock manufacturer symbol libraries are deliberately not
+searched: on a normal install almost all of them are undownloaded placeholders,
+and the ones that do arrive are inconsistent with each other.
 
 ## Matching an existing drawing
 
