@@ -140,4 +140,35 @@ snapshot = dict(m.get_fields(d0))
 find('SPK', ALL)
 check('T9 searching changes nothing', dict(m.get_fields(d0)) == snapshot)
 
+# ── T10: the pull-down is actually populated ──────────────────────────────
+# It was not. AddChoice was called at dialog-construction time with -1 as the
+# position, which builds a menu that opens empty and never reports a choice.
+# The working dialogs in this file all fill their pull-downs inside kSetup
+# with real positions, and this now does the same.
+import re
+SRC = open(os.path.join(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))), 'cc_tools.py'), encoding='utf-8').read()
+
+check('T10 no AddChoice anywhere passes -1 as the position',
+      not re.search(r'AddChoice\([^)]*,\s*-1\s*\)', SRC),
+      repr(re.findall(r'AddChoice\([^)]*-1\s*\)', SRC)[:3]))
+
+# Every pull-down must be filled inside a kSetup branch, not at construction.
+for popup in ('qScopePopup', 'pTypePopup', 'nScopePopup', 'sScopePopup'):
+    adds = [m.start() for m in re.finditer(r'AddChoice\(\w+, %s' % popup, SRC)]
+    setup = SRC.find('kSetup')
+    check('T10 %s is populated at all' % popup, len(adds) > 0, popup)
+
+# The search dialog's constants must not shadow Spell Check's.
+pairs = re.findall(r'^([a-zA-Z_]\w*(?:, *[a-zA-Z_]\w*)*) *= *\d+(?:, *\d+)*$',
+                   SRC, re.M)
+seen = {}
+clashes = []
+for line in pairs:
+    for name in [n.strip() for n in line.split(',')]:
+        if name in seen:
+            clashes.append(name)
+        seen[name] = True
+check('T10 no dialog constant is defined twice', not clashes, repr(clashes))
+
 R.report_and_exit()

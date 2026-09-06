@@ -165,8 +165,10 @@ def build_vs(doc, selected=()):
     def CreatePullDownMenu(dlg, item, w):
         state['choices'].setdefault(item, 0)
 
-    def AddChoice(*a):
-        return None
+    # Records (item, text, position) so a test can prove a pull-down was
+    # actually populated, and populated in kSetup rather than at construction.
+    def AddChoice(dlg, item, text, position):
+        v.choices.setdefault(item, []).append((text, position))
 
     def SelectChoice(dlg, item, idx, st):
         state['choices'][item] = idx
@@ -287,6 +289,7 @@ def build_vs(doc, selected=()):
 
     v.file_choice = ''
     v.dialog_calls = []
+    v.choices = {}
     v.classes = set()
     v.active_class = 'None'
     v.object_class = {}

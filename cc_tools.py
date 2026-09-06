@@ -4468,11 +4468,11 @@ def validate_job_path(path):
 # fields that would be dangerous to edit (endpoint caches, dropdown values)
 # without ever risking a write to them.
 
-sTermLbl, sTermEdit = 704, 705
-sScopeLbl, sScopePopup = 706, 707
-sKindLbl, sDevChk, sCircChk, sOtherChk = 708, 709, 710, 711
-sCaseChk, sWholeChk, sInternalChk = 712, 713, 714
-sNoteTxt = 715
+qTermLbl, qTermEdit = 704, 705
+qScopeLbl, qScopePopup = 706, 707
+qKindLbl, qDevChk, qCircChk, qOtherChk = 708, 709, 710, 711
+qCaseChk, qWholeChk, qInternalChk = 712, 713, 714
+qNoteTxt = 715
 
 rLB, rCountTxt, rHintTxt = 720, 721, 722
 RCOL_OBJECT, RCOL_LABEL, RCOL_FIELD, RCOL_VALUE, RCOL_LAYER = 0, 1, 2, 3, 4
@@ -4576,72 +4576,78 @@ def ask_search():
     chosen = {}
     dlg = vs.CreateLayout('Search ConnectCAD Objects', False, 'Search', 'Cancel')
 
-    vs.CreateStaticText(dlg, sTermLbl, 'Find:', -1)
-    vs.CreateEditText(dlg, sTermEdit, '', 44)
+    vs.CreateStaticText(dlg, qTermLbl, 'Find:', -1)
+    vs.CreateEditText(dlg, qTermEdit, '', 44)
 
-    vs.CreateStaticText(dlg, sScopeLbl, 'Look in:', -1)
-    vs.CreatePullDownMenu(dlg, sScopePopup, 26)
-    vs.AddChoice(dlg, sScopePopup, 'Selected objects only', -1)
-    vs.AddChoice(dlg, sScopePopup, 'Active layer', -1)
-    vs.AddChoice(dlg, sScopePopup, 'Whole document', -1)
+    vs.CreateStaticText(dlg, qScopeLbl, 'Look in:', -1)
+    # The choices go in during kSetup, not here -- see the handler.
+    vs.CreatePullDownMenu(dlg, qScopePopup, 26)
 
-    vs.CreateStaticText(dlg, sKindLbl, 'Objects:', -1)
-    vs.CreateCheckBox(dlg, sDevChk, 'Devices')
-    vs.CreateCheckBox(dlg, sCircChk, 'Circuits')
-    vs.CreateCheckBox(dlg, sOtherChk, 'Sockets, equipment and panels')
+    vs.CreateStaticText(dlg, qKindLbl, 'Objects:', -1)
+    vs.CreateCheckBox(dlg, qDevChk, 'Devices')
+    vs.CreateCheckBox(dlg, qCircChk, 'Circuits')
+    vs.CreateCheckBox(dlg, qOtherChk, 'Sockets, equipment and panels')
 
-    vs.CreateCheckBox(dlg, sCaseChk, 'Match case')
-    vs.CreateCheckBox(dlg, sWholeChk, 'Match the whole field, not part of it')
-    vs.CreateCheckBox(dlg, sInternalChk,
+    vs.CreateCheckBox(dlg, qCaseChk, 'Match case')
+    vs.CreateCheckBox(dlg, qWholeChk, 'Match the whole field, not part of it')
+    vs.CreateCheckBox(dlg, qInternalChk,
                       'Include ConnectCAD internal fields (__ISNEW, control '
                       'points\u2026)')
 
     vs.CreateStaticText(
-        dlg, sNoteTxt,
+        dlg, qNoteTxt,
         'Searches EVERY field, including ones Vectorworks\' own Find and\n'
         'Replace cannot see: cable names, signals, endpoint caches, makes\n'
         'and models. Read-only \u2014 it finds and selects, it never edits.\n\n'
         'Leave Find empty and tick "whole field" to list blank fields.', -1)
 
-    vs.SetFirstLayoutItem(dlg, sTermLbl)
-    vs.SetRightItem(dlg, sTermLbl, sTermEdit, 0, 0)
-    vs.SetBelowItem(dlg, sTermLbl, sScopeLbl, 0, 8)
-    vs.SetRightItem(dlg, sScopeLbl, sScopePopup, 0, 0)
-    vs.SetBelowItem(dlg, sScopeLbl, sKindLbl, 0, 8)
-    vs.SetBelowItem(dlg, sKindLbl, sDevChk, 0, 0)
-    vs.SetBelowItem(dlg, sDevChk, sCircChk, 0, 0)
-    vs.SetBelowItem(dlg, sCircChk, sOtherChk, 0, 0)
-    vs.SetBelowItem(dlg, sOtherChk, sCaseChk, 0, 8)
-    vs.SetBelowItem(dlg, sCaseChk, sWholeChk, 0, 0)
-    vs.SetBelowItem(dlg, sWholeChk, sInternalChk, 0, 0)
-    vs.SetBelowItem(dlg, sInternalChk, sNoteTxt, 0, 10)
+    vs.SetFirstLayoutItem(dlg, qTermLbl)
+    vs.SetRightItem(dlg, qTermLbl, qTermEdit, 0, 0)
+    vs.SetBelowItem(dlg, qTermLbl, qScopeLbl, 0, 8)
+    vs.SetRightItem(dlg, qScopeLbl, qScopePopup, 0, 0)
+    vs.SetBelowItem(dlg, qScopeLbl, qKindLbl, 0, 8)
+    vs.SetBelowItem(dlg, qKindLbl, qDevChk, 0, 0)
+    vs.SetBelowItem(dlg, qDevChk, qCircChk, 0, 0)
+    vs.SetBelowItem(dlg, qCircChk, qOtherChk, 0, 0)
+    vs.SetBelowItem(dlg, qOtherChk, qCaseChk, 0, 8)
+    vs.SetBelowItem(dlg, qCaseChk, qWholeChk, 0, 0)
+    vs.SetBelowItem(dlg, qWholeChk, qInternalChk, 0, 0)
+    vs.SetBelowItem(dlg, qInternalChk, qNoteTxt, 0, 10)
 
     def handler(item, data):
         if item == kSetup:
-            vs.SelectChoice(dlg, sScopePopup, SCOPE_DOCUMENT, True)
+            # A pull-down has to be filled in kSetup, and AddChoice's last
+            # argument is the POSITION of the choice, not a flag. Building the
+            # menu at construction time and passing -1 gives a pull-down that
+            # opens empty and never reports a selection -- which is exactly
+            # what this did.
+            vs.AddChoice(dlg, qScopePopup, 'Selected objects only', 0)
+            vs.AddChoice(dlg, qScopePopup, 'Active layer', 1)
+            vs.AddChoice(dlg, qScopePopup, 'Whole document', 2)
+            vs.SelectChoice(dlg, qScopePopup, SCOPE_DOCUMENT, True)
             # Devices and circuits carry what people search for; the rest is
             # opt-in so a search does not drown in socket rows.
-            vs.SetBooleanItem(dlg, sDevChk, True)
-            vs.SetBooleanItem(dlg, sCircChk, True)
-            vs.SetBooleanItem(dlg, sOtherChk, False)
-            vs.SetBooleanItem(dlg, sCaseChk, False)
-            vs.SetBooleanItem(dlg, sWholeChk, False)
-            vs.SetBooleanItem(dlg, sInternalChk, False)
+            vs.SetBooleanItem(dlg, qDevChk, True)
+            vs.SetBooleanItem(dlg, qCircChk, True)
+            vs.SetBooleanItem(dlg, qOtherChk, False)
+            vs.SetBooleanItem(dlg, qCaseChk, False)
+            vs.SetBooleanItem(dlg, qWholeChk, False)
+            vs.SetBooleanItem(dlg, qInternalChk, False)
         elif item == kOK:
             kinds = set()
-            if vs.GetBooleanItem(dlg, sDevChk):
+            if vs.GetBooleanItem(dlg, qDevChk):
                 kinds.add('device')
-            if vs.GetBooleanItem(dlg, sCircChk):
+            if vs.GetBooleanItem(dlg, qCircChk):
                 kinds.add('circuit')
-            if vs.GetBooleanItem(dlg, sOtherChk):
+            if vs.GetBooleanItem(dlg, qOtherChk):
                 kinds.update(('socket', 'equipment', 'panel', 'panelconnector'))
             chosen.update({
-                'term': vs.GetItemText(dlg, sTermEdit) or '',
-                'scope': vs.GetSelectedChoiceIndex(dlg, sScopePopup, 0),
+                'term': vs.GetItemText(dlg, qTermEdit) or '',
+                'scope': vs.GetSelectedChoiceIndex(dlg, qScopePopup, 0),
                 'kinds': kinds,
-                'case': vs.GetBooleanItem(dlg, sCaseChk),
-                'whole': vs.GetBooleanItem(dlg, sWholeChk),
-                'internal': vs.GetBooleanItem(dlg, sInternalChk),
+                'case': vs.GetBooleanItem(dlg, qCaseChk),
+                'whole': vs.GetBooleanItem(dlg, qWholeChk),
+                'internal': vs.GetBooleanItem(dlg, qInternalChk),
             })
 
     if vs.RunLayoutDialog(dlg, handler) != kOK or not chosen:
@@ -4801,9 +4807,8 @@ def tool_preferences():
                       '{:g}'.format(prefs['section_gap_inches']), 10)
 
     vs.CreateStaticText(dialog, pTypeLbl, 'Circuit line mode:', -1)
+    # Filled in kSetup, for the same reason as the search dialog's.
     vs.CreatePullDownMenu(dialog, pTypePopup, 18)
-    for name in CIRCUIT_TYPES:
-        vs.AddChoice(dialog, pTypePopup, name or '(leave as ConnectCAD sets it)', -1)
 
     vs.CreateStaticText(dialog, pLabelLbl, 'Device label symbol:', -1)
     vs.CreateEditText(dialog, pLabelEdit, prefs['label_symbol'], 22)
@@ -4829,6 +4834,9 @@ def tool_preferences():
 
     def handler(item, data):
         if item == kSetup:
+            for position, name in enumerate(CIRCUIT_TYPES):
+                vs.AddChoice(dialog, pTypePopup,
+                             name or '(leave as ConnectCAD sets it)', position)
             current = prefs.get('circuit_type', '')
             index = CIRCUIT_TYPES.index(current) if current in CIRCUIT_TYPES else 0
             vs.SelectChoice(dialog, pTypePopup, index, True)
