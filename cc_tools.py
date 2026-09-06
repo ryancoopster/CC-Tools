@@ -4207,10 +4207,26 @@ PREF_DEFAULTS = {
     'label_symbol': '',         # '' = leave ConnectCAD's own default alone
 }
 
-# Values ConnectCAD accepts for Circuit.CircuitType. Taken from a real drawing
-# (which uses 'rounded') plus the plug-in's own strings; '' means "do not touch
-# it", which is the safe default for a field we did not set.
-CIRCUIT_TYPES = ['', 'rounded', 'polyline', 'direct', 'orthogonal']
+# Values ConnectCAD accepts for Circuit.CircuitType. There are exactly four,
+# all lowercase, from a contiguous string run in the ConnectCAD binary bounded
+# by a four-entry jump table in ConnectTool_EventSink::GetCircuitType:
+#     polyline  rounded  chamfer  arrow
+# 'direct' and 'orthogonal' were in this list once. They were guesses, they are
+# not legal values, and ConnectCAD would have rejected them -- the same way the
+# guessed field names once made these tools report success while changing
+# nothing.
+#
+# 'arrow' is deliberately NOT offered. The first three share one computed route
+# polygon and differ only in how corners are drawn, so switching between them
+# is cosmetic. 'arrow' is a structurally different object -- paired stub arrows
+# linked by __Arrow_ID and gated on __SameLayer -- so writing it onto an
+# existing routed circuit does not convert it, it breaks it.
+#
+# '' means "leave whatever ConnectCAD set", the safe default for a field we did
+# not choose. ConnectCAD's own default is 'polyline'; house style in these
+# drawings is 'rounded' -- 370 circuits of 372.
+CIRCUIT_TYPES = ['', 'rounded', 'polyline', 'chamfer']
+CIRCUIT_TYPE_ARROW = 'arrow'
 
 # Numeric preferences, with the range each is clamped to. A zero column pitch
 # would stack every device in one place, and a huge one would scatter a job
@@ -5347,7 +5363,13 @@ def finish_circuit(handle, circuit, prefs):
 
     line_mode = (prefs.get('circuit_type') or '').strip()
     if line_mode:
-        values.append((CIRCUIT_TYPE_FIELD, line_mode))
+        # Never convert an arrow circuit. Arrows are paired stubs joined by
+        # __Arrow_ID rather than one routed line, so overwriting the field
+        # leaves the pair half-converted rather than re-routing anything.
+        existing = read_field(handle, resolve_field(handle, [CIRCUIT_TYPE_FIELD])
+                              or CIRCUIT_TYPE_FIELD)
+        if existing != CIRCUIT_TYPE_ARROW:
+            values.append((CIRCUIT_TYPE_FIELD, line_mode))
 
     for field, value in values:
         if not value:

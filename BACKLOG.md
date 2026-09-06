@@ -103,3 +103,57 @@ sockets and wiring all work from script. Remaining pieces:
 - The six unnamed power-distribution devices in the Geffen drawing are invisible
   to every tool that works on names. Naming them is a drawing task, but the
   tools could offer to.
+
+
+## Verified ConnectCAD internals (2026-09-06)
+
+Established by disassembling `connectCAD.vwlibrary/Contents/MacOS/connectCAD`
+and reading the shipped data files. Each of these was checked against the
+primary source a second time by a separate pass, and several first attempts
+were wrong -- so treat anything NOT listed here as unverified.
+
+**Circuit line mode.** `CircuitType` has exactly four legal values, all
+lowercase: `polyline` (ConnectCAD's default), `rounded`, `chamfer`, `arrow`.
+Bounded by a four-entry jump table in `ConnectTool_EventSink::GetCircuitType`.
+`SetRField` alone does nothing -- the value is consumed in the PIO reset
+handler, so `ResetObject` is required and sufficient. `CC_CircuitFromShape`
+does hard-code `polyline`, and does it with exactly SetParamString +
+ResetObject, so that sequence is sanctioned rather than a workaround.
+
+The first three share one computed route polygon and differ only in corner
+rendering. `arrow` is a different object -- paired stubs linked by
+`__Arrow_ID`, gated on `__SameLayer` -- so it must never be written onto an
+existing routed circuit.
+
+**Circuits are auto-classed by signal.** `CC-Circuit-Signal-<SIGNAL>`, built in
+`CClassHandler::GetSignalClassIID`. It happens ONCE, gated on the hidden
+`__Version` parameter (reclass runs only while `__Version <= 2599`, then it is
+stamped 2600). After that first reset your own class, line weight and colour
+survive further resets. **Devices are not auto-classed** -- 61 SetObjectClass
+call sites and the device reset handler is not among them -- so a device's
+class is yours to set.
+
+This is very likely how a schematic gets divided by signal type: class
+visibility per viewport, not spatial regions. It would explain why the Geffen
+drawing has all 212 devices in one continuous field with no spatial banding.
+
+**Device label symbol.** The Device PIO declares six in `cCADDeviceObj.vwstrings`
+(`dev_label_generic`, `EXT_L_label`, `EXT_R_label`, `TP_label`, `VDA_label`,
+`VJX_label`); `Libraries/Defaults/ConnectCAD/Device/Device Labels.vwx` indexes
+eight symbols. The label is placed at device-local (0,0) with UNIFORM scale
+from the hidden `__gridScale` param. Swapping it is `Utilities::ChangeDevLabelSymbol`,
+which is reached only from the OIP/tool path -- so a plain `SetRField` on
+`symbol` is NOT the whole operation and is still unproven from script.
+
+**Device database.** `Libraries/Defaults/ConnectCAD/ConnectCAD_Database/ConnectCAD Devices DB.txt`,
+935,657 bytes, 24 tab-separated columns, **2,735 device records over 17,127
+lines** (the 17k figure is lines, not devices). A device owns a block: it
+starts where col0 or col1 is non-empty and runs to the next such row. Each
+following row is a socket SERIES, not one socket -- col15 is a quantity, and
+the suffix ConnectCAD appends is a single space then the number
+(`CDeviceDBHandler::DecodeSocket`). Col16 orientation is only ever `L` or `R`.
+Read it as bytes and split on `\r\n`: Python universal newlines corrupts it.
+
+A companion `SignalTypes.txt` (UTF-8, CRLF, 1 header + 79 rows) defines the
+signal vocabulary, and the DB's signals are a strict subset of it. Note the
+app and user copies use DIFFERENT line terminators.

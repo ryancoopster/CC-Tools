@@ -289,4 +289,31 @@ check('T9 without symbol heights the sections would have collided',
       blind_top > top_bottom,
       'blind next-top %s vs real symbol bottom %s' % (blind_top, top_bottom))
 
+# ── T10: only the four real line modes, and arrows are left alone ─────────
+# 'direct' and 'orthogonal' were in this list once. They were invented; the
+# legal set is polyline / rounded / chamfer / arrow, and 'arrow' is excluded
+# because it is a different object, not a different corner style.
+check('T10 no invented line modes',
+      'direct' not in m.CIRCUIT_TYPES and 'orthogonal' not in m.CIRCUIT_TYPES,
+      repr(m.CIRCUIT_TYPES))
+check('T10 the three routed modes are offered',
+      set(m.CIRCUIT_TYPES) == {'', 'rounded', 'polyline', 'chamfer'},
+      repr(m.CIRCUIT_TYPES))
+check('T10 arrow is not offered as a line mode',
+      'arrow' not in m.CIRCUIT_TYPES, repr(m.CIRCUIT_TYPES))
+
+arrow = Obj('Circuit', {'Signal': '', 'Number': '', 'Cable': '', 'Label': '',
+                        'CircuitType': 'arrow'})
+m.finish_circuit(arrow, {'signal': 'PWR'}, dict(m.PREF_DEFAULTS,
+                                                circuit_type='rounded'))
+check('T10 an arrow circuit is never converted',
+      arrow.fields['CircuitType'] == 'arrow', repr(arrow.fields))
+
+routed = Obj('Circuit', {'Signal': '', 'Number': '', 'Cable': '', 'Label': '',
+                         'CircuitType': 'polyline'})
+m.finish_circuit(routed, {'signal': 'PWR'}, dict(m.PREF_DEFAULTS,
+                                                 circuit_type='rounded'))
+check('T10 a routed circuit still converts',
+      routed.fields['CircuitType'] == 'rounded', repr(routed.fields))
+
 R.report_and_exit()
