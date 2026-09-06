@@ -40,8 +40,15 @@ product is written `Galaxy 408`, `GALAXY-408` and `Galaxy_408` across a set.
 **To make a symbol:** build a device the way you want it, then *Save as Symbol…*
 in its Object Info palette.
 
+Device symbols live in the symbol folder **`zConnectCAD db Created`**, which is
+where ConnectCAD files the ones it builds from the database. The Resource
+Manager **root** holds device *parts* — jacks, terminals, patch points — which
+are Device plug-in objects too, so a root-only search returns the wrong things
+and misses every real device.
+
 Still to do:
-- Search ConnectCAD's own device-symbol libraries, not just the open document.
+- Search ConnectCAD's shipped device libraries on disk, not just the open
+  document.
 - Fall back to the device database (`ConnectCAD Devices DB.txt`, ~17k rows) for
   the socket list when no symbol exists, so a hand-built device still gets its
   real connectors rather than invented ones.

@@ -27,11 +27,28 @@ plain = Obj('SymDef', {}, children=[Obj('Rect', {})])       # not a device symbo
 m, vs = load(Doc([[dev('x')]]))
 vs.FInSymDef = lambda s: s.children[0] if s.children else None
 vs.GetCustomObjectProfileGroup = lambda h: h
-vs.BuildResourceList = lambda t, f, sub: (1, 3)
-names = {1: 'Meyer Sound_Galaxy 408', 2: 'Cisco_C9300', 3: 'A Plain Symbol'}
-defs = {1: symdef, 2: other, 3: plain}
-vs.GetNameFromResourceList = lambda lid, i: names[i]
-vs.GetResourceFromList = lambda lid, i: defs[i]
+# ConnectCAD files real device symbols in 'zConnectCAD db Created'. The root
+# holds device PARTS -- jacks, terminals -- which are Device PIOs too, so a
+# root-only search finds the wrong things and misses the right ones.
+part, _p = device_in_symbol('AudJack2FN', '', '', 2)
+FOLDERS = {
+    'zConnectCAD db Created': [('Meyer Sound_Galaxy 408', symdef),
+                               ('Cisco_C9300', other)],
+    'ConnectCAD Devices': [],
+    '': [('AudJack2FN', part), ('A Plain Symbol', plain)],
+}
+lists = {}
+
+
+def build(t, f, sub):
+    entries = FOLDERS.get(sub, [])
+    lists[len(lists) + 1] = entries
+    return len(lists), len(entries)
+
+
+vs.BuildResourceList = build
+vs.GetNameFromResourceList = lambda lid, i: lists[lid][i - 1][0]
+vs.GetResourceFromList = lambda lid, i: lists[lid][i - 1][1]
 
 # ── T1: the Device inside a symbol definition is found ──────────────────────
 check('T1 device found inside a symbol', m.device_pio_in_symbol(symdef) is inner)
@@ -40,9 +57,11 @@ check('T1 no symbol yields nothing', m.device_pio_in_symbol(None) is None)
 
 # ── T2: the catalogue reports what each symbol is a device OF ───────────────
 catalogue = m.device_symbol_catalogue()
-check('T2 only device symbols listed', len(catalogue) == 2,
+check('T2 non-device symbols excluded',
+      all(c['symbol'] != 'A Plain Symbol' for c in catalogue),
       repr([c['symbol'] for c in catalogue]))
-first = catalogue[0]
+# Look up by name: the catalogue is sorted, so position is not identity.
+first = next(c for c in catalogue if c['symbol'] == 'Meyer Sound_Galaxy 408')
 check('T2 make and model read from the Device, not the name',
       first['make'] == 'Meyer Sound' and first['model'] == 'Galaxy 408',
       repr(first))
@@ -106,5 +125,41 @@ check('T5 stamping computes no socket geometry', consulted == [], repr(consulted
 # ── T6: a symbol with no Device inside is refused ──────────────────────────
 check('T6 a plain symbol cannot be stamped',
       m4.place_device_from_symbol(plain, 0, 0) is None)
+
+
+# ── T7: devices come from ConnectCAD's folder, parts from the root ─────────
+# The root of the Resource Manager holds device PARTS -- jacks, terminals,
+# patch points -- which are Device plug-in objects too. Searching only the root
+# returns those and misses every real device.
+check('T7 ConnectCAD device folder is searched first',
+      m.DEVICE_SYMBOL_FOLDERS[0] == 'zConnectCAD db Created',
+      repr(m.DEVICE_SYMBOL_FOLDERS))
+
+catalogue7 = m.device_symbol_catalogue()
+by_name = {e['symbol']: e for e in catalogue7}
+check('T7 real devices found in ConnectCAD\'s folder',
+      'Meyer Sound_Galaxy 408' in by_name and 'Cisco_C9300' in by_name,
+      repr(list(by_name)))
+check('T7 and their folder is recorded',
+      by_name['Meyer Sound_Galaxy 408']['folder'] == 'zConnectCAD db Created',
+      repr(by_name['Meyer Sound_Galaxy 408']))
+check('T7 parts from the root are still listed',
+      'AudJack2FN' in by_name, repr(list(by_name)))
+check('T7 but sorted below devices that name a make or model',
+      [e['symbol'] for e in catalogue7][:2]
+      == ['Cisco_C9300', 'Meyer Sound_Galaxy 408'],
+      repr([e['symbol'] for e in catalogue7]))
+check('T7 non-device symbols still excluded',
+      'A Plain Symbol' not in by_name, repr(list(by_name)))
+
+# A symbol appearing in two folders is listed once.
+check('T7 no duplicates across folders',
+      len(catalogue7) == len(set(e['symbol'] for e in catalogue7)),
+      repr([e['symbol'] for e in catalogue7]))
+
+# Matching still works against the folder-sourced catalogue.
+check('T7 lookup finds the device, not the part',
+      m.find_device_symbol('Meyer Sound', 'Galaxy 408', catalogue7)['symbol']
+      == 'Meyer Sound_Galaxy 408')
 
 R.report_and_exit()

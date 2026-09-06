@@ -2374,49 +2374,79 @@ def device_pio_in_symbol(symdef):
     return None
 
 
-def device_symbol_catalogue():
-    """Every device symbol available, with what it is a device OF.
+# ConnectCAD files device symbols it builds from the database into a symbol
+# folder of this name. The root of the Resource Manager holds device PARTS --
+# jacks, terminals, patch points -- which are also Device plug-in objects, so
+# searching the root alone finds the wrong things and misses the right ones.
+DEVICE_SYMBOL_FOLDERS = ['zConnectCAD db Created', 'ConnectCAD Devices', '']
 
-    Read from the symbol definitions rather than from names: ConnectCAD names
-    these `Make_Model`, but a drawing's own symbols may be named anything, and
-    what matters is the make and model on the Device inside.
-    """
-    catalogue = []
+
+def symbols_in_folder(folder):
+    """Every symbol definition in one document symbol folder.
+
+    Returns a list of (name, handle). An empty folder name means the root."""
+    found = []
     try:
-        list_id, count = vs.BuildResourceList(TYPE_SYMDEF, 0, '')
+        list_id, count = vs.BuildResourceList(TYPE_SYMDEF, 0, folder)
     except Exception:
-        return catalogue
-
+        return found
     for index in range(1, (count or 0) + 1):
         try:
             name = vs.GetNameFromResourceList(list_id, index)
-            symdef = vs.GetResourceFromList(list_id, index)
+            handle = vs.GetResourceFromList(list_id, index)
         except Exception:
             continue
-        device = device_pio_in_symbol(symdef)
-        if not device:
-            continue
-        group = None
-        try:
-            group = vs.GetCustomObjectProfileGroup(device)
-        except Exception:
-            pass
-        sockets = 0
-        if group:
-            handle = vs.FInGroup(group)
-            guard = 0
-            while handle and guard < 200:
-                guard += 1
-                if classify(handle) == 'socket':
-                    sockets += 1
-                handle = vs.NextObj(handle)
-        catalogue.append({
-            'symbol': name,
-            'handle': symdef,
-            'make': read_field(device, 'make'),
-            'model': read_field(device, 'model'),
-            'sockets': sockets,
-        })
+        if handle:
+            found.append((name, handle))
+    return found
+
+
+def device_symbol_catalogue(folders=None):
+    """Every device symbol available, with what it is a device OF.
+
+    Searches ConnectCAD's own device-symbol folder first. The Resource
+    Manager root holds device PARTS -- jacks, terminals, patch points -- which
+    are Device plug-in objects too, so a root-only search returns those and
+    not the devices wanted here.
+
+    Make and model are read from the Device inside each symbol rather than
+    from its name: ConnectCAD names these Make_Model, but a drawing's own
+    symbols may be named anything."""
+    catalogue = []
+    seen = set()
+    for folder in (folders if folders is not None else DEVICE_SYMBOL_FOLDERS):
+        for name, symdef in symbols_in_folder(folder):
+            if name in seen:
+                continue
+            device = device_pio_in_symbol(symdef)
+            if not device:
+                continue
+            seen.add(name)
+            group = None
+            try:
+                group = vs.GetCustomObjectProfileGroup(device)
+            except Exception:
+                pass
+            sockets = 0
+            if group:
+                handle = vs.FInGroup(group)
+                guard = 0
+                while handle and guard < 400:
+                    guard += 1
+                    if classify(handle) == 'socket':
+                        sockets += 1
+                    handle = vs.NextObj(handle)
+            catalogue.append({
+                'symbol': name,
+                'folder': folder or '(root)',
+                'handle': symdef,
+                'make': read_field(device, 'make'),
+                'model': read_field(device, 'model'),
+                'sockets': sockets,
+            })
+    # A symbol that names what it is a device of is a real device; the parts
+    # in the root generally do not. Sort those to the front.
+    catalogue.sort(key=lambda e: (not (e['make'] or e['model']), e['symbol']))
     return catalogue
 
 
@@ -3922,13 +3952,14 @@ def tool_creation_probe():
     # A symbol beats hand-building: it already has its sockets, so none of the
     # grid or pitch rules below are consulted at all.
     catalogue = device_symbol_catalogue()
-    log.append('Device symbols available: {}'.format(len(catalogue)))
-    for entry in catalogue[:12]:
-        log.append('  {:<28} {} {}  ({} socket(s))'.format(
-            entry['symbol'][:28], entry['make'], entry['model'],
-            entry['sockets']))
-    if len(catalogue) > 12:
-        log.append('  ... and {} more'.format(len(catalogue) - 12))
+    log.append('Device symbols found: {}   (searched: {})'.format(
+        len(catalogue), ', '.join(f or '(root)' for f in DEVICE_SYMBOL_FOLDERS)))
+    for entry in catalogue[:15]:
+        log.append('  {:<24} {:<22} {} {}  ({} socket(s))'.format(
+            entry['symbol'][:24], entry['folder'][:22], entry['make'],
+            entry['model'], entry['sockets']))
+    if len(catalogue) > 15:
+        log.append('  ... and {} more'.format(len(catalogue) - 15))
     if not catalogue:
         log.append('  none in this document, so devices are built by hand.')
         log.append('  To make one: build a device as you want it, then use')
