@@ -115,9 +115,15 @@ check('T7 DEVICES.md exists', os.path.exists(shipped))
 if os.path.exists(shipped):
     parsed = m.parse_golden_devices(open(shipped, encoding='utf-8').read())
     check('T7 it parses to real devices', len(parsed) >= 20, '%d' % len(parsed))
-    check('T7 every entry has sockets',
-          all(v['sockets'] for v in parsed.values()),
-          repr([k for k, v in parsed.items() if not v['sockets']]))
+    # Not every entry has sockets: devices known only from the rack layout
+    # carry physical properties and no socket list yet. An entry with NEITHER
+    # would be a parse failure.
+    check('T7 every entry carries sockets or properties',
+          all(v['sockets'] or v['properties'] for v in parsed.values()),
+          repr([k for k, v in parsed.items()
+                if not v['sockets'] and not v['properties']]))
+    check('T7 most entries have sockets',
+          sum(1 for v in parsed.values() if v['sockets']) >= 20)
     names = [s[1] for v in parsed.values() for s in m.golden_socket_specs(v)]
     check('T7 no socket name has stray whitespace',
           all(n == n.strip() for n in names),
@@ -198,5 +204,21 @@ if os.path.exists(shipped):
                   prop in ('rack mounted', 'rack u')
                   or any(c.isalpha() for c in value),
                   repr(value))
+
+# ── T10: the measured data is internally consistent ──────────────────────
+# Rack height and rack U come from different fields of the drawing, so they
+# are an independent check on each other -- and on the feet-to-inches
+# conversion used to seed the file.
+if os.path.exists(shipped):
+    checked = 0
+    for key, entry in parsed.items():
+        h = m.golden_number(entry, 'height')
+        u = m.golden_number(entry, 'rack u')
+        if h is None or u is None or not m.golden_is_rack_mounted(entry):
+            continue
+        checked += 1
+        check('T10 %s: %gU x 1.75 in = its height' % (key[1][:18], u),
+              abs(h - u * 1.75) < 0.06, 'height %s, %s U' % (h, u))
+    check('T10 several devices were cross-checked', checked >= 5, '%d' % checked)
 
 R.report_and_exit()

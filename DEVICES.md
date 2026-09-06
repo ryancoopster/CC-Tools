@@ -99,13 +99,11 @@ this file is for.
 
 ### Custom | Connector Panel
 
-- Width:
-- Height:
-- Depth:
-- Weight:
-- Power:
-- Rack mounted:
-- Rack U:
+- Width: 18.92 in
+- Height: 7 in
+- Depth: 3.15 in
+- Rack mounted: yes
+- Rack U: 4
 
 | Socket | Type | Signal | Connector | Side |
 |---|---|---|---|---|
@@ -114,9 +112,9 @@ this file is for.
 
 ### Focusrite | REDNET-D16R AES
 
-- Width: 482.6 mm
-- Height: 44.45 mm
-- Depth: 262.89 mm
+- Width: 19.06 in
+- Height: 1.75 in
+- Depth: 10.35 in
 - Weight: 3.84 kg
 - Power: 30 W
 - Rack mounted: yes
@@ -136,13 +134,13 @@ this file is for.
 
 ### Luminex | 10I 10G 2X SFP 1G x8
 
-- Width:
-- Height:
-- Depth:
-- Weight:
-- Power:
-- Rack mounted:
-- Rack U:
+- Width: 9.5 in
+- Height: 1.75 in
+- Depth: 13 in
+- Weight: 3.4 kg
+- Power: 30 W
+- Rack mounted: yes
+- Rack U: 1
 
 | Socket | Type | Signal | Connector | Side |
 |---|---|---|---|---|
@@ -180,13 +178,12 @@ this file is for.
 
 ### Luminex | 16I 10G
 
-- Width:
-- Height:
-- Depth:
-- Weight:
-- Power:
-- Rack mounted:
-- Rack U:
+- Width: 9.49 in
+- Height: 1.76 in
+- Depth: 11.67 in
+- Weight: 2.4 kg
+- Power: 25 W
+- Rack mounted: yes
 
 | Socket | Type | Signal | Connector | Side |
 |---|---|---|---|---|
@@ -209,13 +206,11 @@ this file is for.
 
 ### Luminex | 30i 10G POE
 
-- Width:
-- Height:
-- Depth:
-- Weight:
-- Power:
-- Rack mounted:
-- Rack U:
+- Width: 18.98 in
+- Height: 1.75 in
+- Depth: 12.2 in
+- Rack mounted: yes
+- Rack U: 1
 
 | Socket | Type | Signal | Connector | Side |
 |---|---|---|---|---|
@@ -268,13 +263,13 @@ this file is for.
 
 ### Meyer Sound | Galaxy 408
 
-- Width:
-- Height:
-- Depth:
-- Weight:
-- Power:
-- Rack mounted:
-- Rack U:
+- Width: 19 in
+- Height: 1.75 in
+- Depth: 16.14 in
+- Weight: 6 kg
+- Power: 26.33 W
+- Rack mounted: yes
+- Rack U: 1
 
 | Socket | Type | Signal | Connector | Side |
 |---|---|---|---|---|
@@ -295,9 +290,9 @@ this file is for.
 
 ### Meyer Sound | Galaxy 816
 
-- Width: 483 mm
-- Height: 88 mm
-- Depth: 410 mm
+- Width: 19 in
+- Height: 3.47 in
+- Depth: 16.14 in
 - Weight: 7.6 kg
 - Rack mounted: yes
 
@@ -332,13 +327,12 @@ this file is for.
 
 ### Meyer Sound | MPS-488X
 
-- Width:
-- Height:
-- Depth:
-- Weight:
-- Power:
-- Rack mounted:
-- Rack U:
+- Width: 18.92 in
+- Height: 1.76 in
+- Depth: 15.31 in
+- Weight: 6.9 kg
+- Power: 1350 W
+- Rack mounted: no
 
 | Socket | Type | Signal | Connector | Side |
 |---|---|---|---|---|
@@ -453,13 +447,11 @@ this file is for.
 
 ### Middle Atlantic | EB1
 
-- Width:
-- Height:
-- Depth:
-- Weight:
-- Power:
-- Rack mounted:
-- Rack U:
+- Width: 18.92 in
+- Height: 1.75 in
+- Depth: 0.12 in
+- Rack mounted: yes
+- Rack U: 1
 
 | Socket | Type | Signal | Connector | Side |
 |---|---|---|---|---|
@@ -471,13 +463,12 @@ this file is for.
 
 ### Middle Atlantic | UPS-S1000R
 
-- Width:
-- Height:
-- Depth:
-- Weight:
-- Power:
-- Rack mounted:
-- Rack U:
+- Width: 19.06 in
+- Height: 1.75 in
+- Depth: 15.31 in
+- Weight: 16.3 kg
+- Rack mounted: yes
+- Rack U: 1
 
 | Socket | Type | Signal | Connector | Side |
 |---|---|---|---|---|
@@ -491,13 +482,11 @@ this file is for.
 
 ### Radial | POWER-2
 
-- Width:
-- Height:
-- Depth:
-- Weight:
-- Power:
-- Rack mounted:
-- Rack U:
+- Width: 18.92 in
+- Height: 1.75 in
+- Depth: 10.05 in
+- Rack mounted: yes
+- Rack U: 1
 
 | Socket | Type | Signal | Connector | Side |
 |---|---|---|---|---|
@@ -584,13 +573,11 @@ this file is for.
 
 ### theatrixx | 5-L21-30 distro
 
-- Width:
-- Height:
-- Depth:
-- Weight:
-- Power:
-- Rack mounted:
-- Rack U:
+- Width: 18.92 in
+- Height: 21 in
+- Depth: 22 in
+- Rack mounted: yes
+- Rack U: 12
 
 | Socket | Type | Signal | Connector | Side |
 |---|---|---|---|---|
@@ -638,13 +625,11 @@ this file is for.
 
 ### theatrixx | L21-30 PD
 
-- Width:
-- Height:
-- Depth:
-- Weight:
-- Power:
-- Rack mounted:
-- Rack U:
+- Width: 18.92 in
+- Height: 3.5 in
+- Depth: 9.26 in
+- Rack mounted: yes
+- Rack U: 2
 
 | Socket | Type | Signal | Connector | Side |
 |---|---|---|---|---|
@@ -664,13 +649,11 @@ this file is for.
 
 ### theatrixx | PB-11
 
-- Width:
-- Height:
-- Depth:
-- Weight:
-- Power:
-- Rack mounted:
-- Rack U:
+- Width: 19 in
+- Height: 1.75 in
+- Depth: 9 in
+- Rack mounted: yes
+- Rack U: 1
 
 | Socket | Type | Signal | Connector | Side |
 |---|---|---|---|---|
@@ -685,3 +668,82 @@ this file is for.
 | PWR_OUT 6 | OUT | PWR | NEMA 5-15P | R |
 | PWR_OUT 7 | OUT | PWR | NEMA 5-15P | R |
 | PWR_OUT 8 | OUT | PWR | NEMA 5-15P | R |
+
+## Known from the rack layout only
+
+Physical properties measured from the drawing. **No socket lists
+yet** — add them as these devices come up in a schematic.
+
+### Ampetronic | C-5 Loop Driver
+
+- Width: 18.92 in
+- Height: 1.75 in
+- Depth: 7.48 in
+- Rack mounted: yes
+- Rack U: 1
+
+### Audio Accessories | WEP_961_SH
+
+- Width: 18.92 in
+- Height: 1.75 in
+- Depth: 4 in
+- Rack mounted: yes
+- Rack U: 1
+
+### Custom Panel | Custom Patch Panel
+
+- Width: 18.92 in
+- Height: 21 in
+- Depth: 4 in
+- Rack mounted: yes
+- Rack U: 12
+
+### Middle Atlantic | BR1
+
+- Width: 18.92 in
+- Height: 1.75 in
+- Depth: 0.99 in
+- Rack mounted: yes
+- Rack U: 1
+
+### Middle Atlantic | UPS-S1500R
+
+- Width: 19.01 in
+- Height: 3.51 in
+- Depth: 16.5 in
+- Weight: 24.5 kg
+- Rack mounted: yes
+
+### Yamaha | DSP-RX-EX
+
+- Width: 18.92 in
+- Height: 8.75 in
+- Depth: 19.3 in
+- Rack mounted: yes
+- Rack U: 5
+
+### Yamaha | RPIO 222
+
+- Width: 18.92 in
+- Height: 8.75 in
+- Depth: 19.3 in
+- Rack mounted: yes
+- Rack U: 5
+
+### Yamaha | Rio1608
+
+- Width: 18.92 in
+- Height: 5.25 in
+- Depth: 12 in
+- Weight: 9.6 kg
+- Rack mounted: yes
+
+### Yamaha | TF-Rack
+
+- Width: 18.92 in
+- Height: 5.25 in
+- Depth: 16.12 in
+- Weight: 9.2 kg
+- Power: 85 W
+- Rack mounted: yes
+- Rack U: 3
