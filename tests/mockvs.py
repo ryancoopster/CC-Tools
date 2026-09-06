@@ -257,6 +257,12 @@ def build_vs(doc, selected=()):
     def GetItemText(dlg, item):
         return state['text'].get(item, '')
 
+    # The Open dialog. Tests set v.file_choice to whatever GetFile should
+    # hand back -- '' stands for the user cancelling.
+    def GetFile():
+        return v.file_choice
+
+    v.file_choice = ''
     for name, fn in list(locals().items()):
         if callable(fn) and name[0].isupper():
             setattr(v, name, fn)

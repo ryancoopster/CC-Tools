@@ -15,8 +15,8 @@ Running **CC Tools** opens a launcher where you tick one or more tools. Nothing 
 | **Match Names and Display Tags** | Finds objects whose Name and Display Tag disagree and lets you choose which one wins — in bulk, or one at a time. |
 | **Spell Check** | Finds likely typos in free-text fields, and doubles as a reviewable find-and-replace across every ConnectCAD object. |
 | **Export Reference Schematic** | Read-only. Writes a signal-flow layer out as JSON — devices, their sockets, and the real circuit wiring — for use as a worked example. |
-| **Export prompt for Claude** | Read-only. Writes a prompt describing how this drawing is built, ready to paste into Claude. |
-| **Draw schematic job** | Builds the devices and wiring from a JSON job Claude designed. |
+| **Export prompt for Claude** | Read-only. Writes a profile of how this drawing is built, to hand Claude so new work matches it. |
+| **Draw schematic job** | Opens a file dialog, then builds the devices and wiring from the job file Claude gave you. |
 
 Normalise runs before Match on purpose: uppercasing and trimming collapses every case-only and whitespace-only mismatch (`amp1` vs `AMP1`), so Match only asks about pairs that genuinely differ. Spell Check runs last, once every name has settled.
 
@@ -66,9 +66,16 @@ This works and has been used on real drawings, but it is early software that edi
 
 ## Designing a schematic with Claude
 
-CC Tools can draw a schematic that Claude designs — no API key or developer
-account needed. Export a prompt, paste it into Claude, save the JSON reply, draw
-it. See [SCHEMATIC-JOBS.md](SCHEMATIC-JOBS.md).
+CC Tools can draw a schematic that Claude designs — no API key, developer
+account or terminal needed:
+
+1. Drag [`JOB-SPEC.md`](JOB-SPEC.md) into a Claude conversation.
+2. Describe what you want.
+3. Download the `.json` file Claude gives you.
+4. **CC Tools ▸ Draw schematic job**, and pick that file.
+
+[SCHEMATIC-JOBS.md](SCHEMATIC-JOBS.md) covers it properly, including how to make
+the result match a drawing you already have.
 
 ## More detail
 

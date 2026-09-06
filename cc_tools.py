@@ -3371,7 +3371,12 @@ def probe_make_device(name, x, y, width, height, socket_specs, log,
     log.append('  info  body         {:.3f} wide x {:.3f} tall for {} socket(s)'
                .format(width, height, len(socket_specs)))
     try:
-        vs.Rect(x - width / 2.0, y + height, x + width / 2.0, y)
+        # (x, y) is the device's TOP edge, the same reference
+        # place_device_from_symbol uses. Anchoring on the bottom instead would
+        # make a device's header move as sockets were added to it, so two
+        # devices written at the same y would not line up unless they happened
+        # to have the same socket count.
+        vs.Rect(x - width / 2.0, y, x + width / 2.0, y - height)
         rect = vs.LNewObj()
     except Exception as err:
         log.append('  FAIL  could not draw the rectangle: {}'.format(err))
@@ -4125,10 +4130,10 @@ def tool_creation_probe():
 #
 # Two halves of one workflow, deliberately kept apart:
 #
-#   Export prompt   writes everything a model needs to design a schematic for
-#                   THIS drawing -- its conventions, a worked example, and the
-#                   job format -- as a text file to paste into Claude.
-#   Draw job        reads the JSON that comes back and builds it.
+#   Export prompt   writes a profile of THIS drawing -- its conventions and a
+#                   worked example -- to hand Claude alongside JOB-SPEC.md, so
+#                   new work matches the document it is going into. Optional.
+#   Draw job        asks for the file Claude produced and builds it.
 #
 # The file in between is the contract. It does not care whether the JSON was
 # produced by a conversation in the Claude app, by an MCP server, or by an API
@@ -4162,18 +4167,69 @@ JOB_FORMAT = '''{
         {"name": "LAN 1", "type": "OUT", "signal": "LAN",
          "connector": "EC-6A", "side": "R"}
       ]
+    },
+    {
+      "name": "SPK 1.01 HL ARRAY 1",
+      "make": "Meyer Sound", "model": "TIGRA-L",
+      "column": 1,
+      // Vertical position. ConnectCAD wires sockets that line up, so say
+      // WHICH sockets should line up and let the plug-in do the arithmetic:
+      "align_to": {"device": "SWTCH 4.01 HL UPPER",
+                   "socket": "LAN 1", "my_socket": "LAN_IN 1"},
+      "sockets": [
+        {"name": "LAN_IN 1", "type": "IN", "signal": "LAN",
+         "connector": "EC-6A", "side": "L"}
+      ]
     }
   ],
   "circuits": [
-    {"from": {"device": "SWTCH 4.01 HL UPPER", "socket": "LAN 6"},
+    {"from": {"device": "SWTCH 4.01 HL UPPER", "socket": "LAN 1"},
      "to":   {"device": "SPK 1.01 HL ARRAY 1", "socket": "LAN_IN 1"},
      "signal": "MILAN PRI"}
   ]
-}'''
+}
+
+Every circuit's destination needs an "align_to" back to its source, or the
+devices are drawn but nothing is wired. A device fed from two sources can only
+be aligned to one of them -- say so rather than leaving it silently unwired.'''
 
 
 def job_path():
     return os.path.join(BASE_FOLDER, JOB_FILE)
+
+
+def pick_job_file():
+    """Ask for the job file with a Finder dialog. Returns (path, note).
+
+    The job now arrives as a download -- Claude hands over a file rather than
+    text to save by hand -- so it lives wherever the browser put it and the
+    plug-in has to be pointed at it.
+
+    vs.GetFile is the standard Open dialog. VectorScript declares it
+    PROCEDURE GetFile(VAR fileName:STRING), so Python gets the path back as the
+    return value; some builds wrap a lone VAR parameter in a tuple, hence the
+    unwrap. There is no routine for restricting the dialog to a file type, so
+    the extension is checked after the fact instead."""
+    chooser = getattr(vs, 'GetFile', None)
+    if chooser is None:
+        fallback = job_path()
+        if os.path.exists(fallback):
+            return fallback, fallback
+        return None, ('This Vectorworks has no file dialog, and there is no\n'
+                      '{} to fall back on.'.format(fallback))
+    try:
+        result = chooser()
+    except Exception as err:
+        return None, 'The file dialog failed: {}'.format(err)
+    if isinstance(result, (tuple, list)):
+        result = next((item for item in reversed(result)
+                       if isinstance(item, str)), '')
+    path = (result or '').strip()
+    if not path:
+        return None, None                      # cancelled; say nothing
+    if not os.path.exists(path):
+        return None, 'That file no longer exists:\n{}'.format(path)
+    return path, path
 
 
 # ─── Export a prompt ─────────────────────────────────────────────────────────
@@ -4263,32 +4319,35 @@ def tool_export_prompt():
         f.write(text)
 
     vs.AlrtDialog(
-        'Prompt written to:\n{}\n\n'
-        '1. Open it, add what you want at the bottom, and copy the whole file.\n'
-        '2. Paste it into Claude and talk about the design.\n'
-        '3. Save the JSON reply as {} in the same folder.\n'
-        '4. Run CC Tools again and choose "Draw schematic job".'.format(
-            path, JOB_FILE))
+        'Document profile written to:\n{}\n\n'
+        'This describes how THIS drawing is built, so new work matches it.\n\n'
+        '1. Start a Claude conversation and attach JOB-SPEC.md.\n'
+        '2. Attach this file too, so it follows your conventions.\n'
+        '3. Describe what you want. Claude replies with a .json file.\n'
+        '4. Download it, then run CC Tools > Draw schematic job and\n'
+        '   pick the file.'.format(path))
     return 'done', 'prompt for {} device(s) written to\n{}'.format(
         len(profile['device_models']), path)
 
 
 # ─── Read a job ──────────────────────────────────────────────────────────────
-def read_job():
-    """Load and validate the job file. Returns (job, problems).
+def read_job(path=None):
+    """Load and validate a job file. Returns (job, problems).
 
     Validation is deliberately strict and reported all at once: a job is
     written by a language model, and a circuit naming a device that does not
     exist should be a message, not a half-built schematic."""
     import json
-    path = job_path()
+    if path is None:
+        path = job_path()
+    label = os.path.basename(path) or JOB_FILE
     try:
         with open(path, 'r', encoding='utf-8') as f:
             text = f.read()
     except FileNotFoundError:
-        return None, ['No {} found in {}.'.format(JOB_FILE, BASE_FOLDER)]
+        return None, ['No job file found at {}.'.format(path)]
     except Exception as err:
-        return None, ['Could not read {}: {}'.format(JOB_FILE, err)]
+        return None, ['Could not read {}: {}'.format(label, err)]
 
     # A pasted reply often arrives wrapped in a code fence.
     stripped = text.strip()
@@ -4300,7 +4359,7 @@ def read_job():
     try:
         job = json.loads(stripped)
     except Exception as err:
-        return None, ['{} is not valid JSON: {}'.format(JOB_FILE, err)]
+        return None, ['{} is not valid JSON: {}'.format(label, err)]
 
     problems = []
     devices = job.get('devices')
@@ -4341,6 +4400,9 @@ def read_job():
 def job_position(device, gx, gy):
     """Where a job device sits, from explicit coordinates or a column/row grid.
 
+    The y is the device's TOP edge, so devices written at the same y line up
+    along their headers whatever their socket counts.
+
     ConnectCAD wires by horizontal alignment, so position is not decoration --
     it is how the schematic says what connects to what."""
     try:
@@ -4360,6 +4422,99 @@ def job_position(device, gx, gy):
     unit_y = gy if gy else 0.25
     return (column * JOB_COLUMN_INCHES / 0.25 * unit_x,
             -row * JOB_ROW_INCHES / 0.25 * unit_y)
+
+
+def socket_stack_index(device, socket_name):
+    """Where a named socket sits in its side's stack. Returns (index, side).
+
+    Sockets are numbered down each edge independently, so the left and right
+    stacks each start at 0."""
+    wanted = (socket_name or '').strip().upper()
+    counts = {}
+    for socket in device.get('sockets') or []:
+        if not isinstance(socket, dict):
+            continue
+        name = (socket.get('name') or '').strip()
+        if not name:
+            continue
+        side = -1 if (socket.get('side') or '').strip().upper().startswith('L') else 1
+        index = counts.get(side, 0)
+        counts[side] = index + 1
+        if name.upper() == wanted:
+            return index, side
+    return None, None
+
+
+def resolve_job_positions(job, gx, gy, upi=1.0, scale=1.0):
+    """Where every device goes. Returns ({name: (x, y)}, notes).
+
+    ConnectCAD only wires sockets that sit at the same height, so a job whose
+    y values are a few hundredths out draws a schematic with no circuits in
+    it. Rather than ask whoever writes the job to do grid arithmetic in their
+    head, a device can say "align_to": which of its sockets should line up
+    with which socket on another device. The y is then computed from the same
+    socket pitch the drawing code uses, so the two cannot disagree.
+
+    Alignment chains -- speaker 3 may align to speaker 2 -- so this resolves
+    in dependency order, and reports anything it cannot resolve rather than
+    silently leaving a device where it first landed."""
+    by_name = {}
+    for device in job['devices']:
+        name = (device.get('name') or '').strip()
+        if name:
+            by_name[name] = device
+
+    positions = {}
+    notes = []
+    for name, device in by_name.items():
+        positions[name] = job_position(device, gx, gy)
+
+    pending = [n for n, d in by_name.items() if isinstance(d.get('align_to'), dict)]
+    settled = set(by_name) - set(pending)
+
+    # Chains resolve outwards from devices that are already fixed. Each pass
+    # must settle at least one device or the rest are unreachable.
+    while pending:
+        progressed = []
+        for name in pending:
+            device = by_name[name]
+            spec = device['align_to']
+            target = (spec.get('device') or '').strip()
+            if target not in by_name:
+                notes.append('{}: align_to names "{}", which is not in the '
+                             'job. Left where it was.'.format(name, target))
+                progressed.append(name)
+                continue
+            if target not in settled:
+                continue
+            their_index, _their_side = socket_stack_index(
+                by_name[target], spec.get('socket'))
+            my_index, _my_side = socket_stack_index(device, spec.get('my_socket'))
+            if their_index is None or my_index is None:
+                missing = spec.get('socket') if their_index is None \
+                    else spec.get('my_socket')
+                notes.append('{}: align_to refers to socket "{}", which does '
+                             'not exist. Left where it was.'.format(
+                                 name, missing))
+                progressed.append(name)
+                continue
+            x, _y = positions[name]
+            _tx, ty = positions[target]
+            positions[name] = (
+                x,
+                ty - socket_drop(their_index, upi, scale, gy)
+                + socket_drop(my_index, upi, scale, gy))
+            progressed.append(name)
+
+        if not progressed:
+            for name in pending:
+                notes.append('{}: align_to cannot be resolved -- the chain it '
+                             'is part of has no fixed starting point, or loops '
+                             'back on itself. Left where it was.'.format(name))
+            break
+        settled.update(progressed)
+        pending = [n for n in pending if n not in progressed]
+    return positions, notes
 
 
 def job_socket_specs(device):
@@ -4388,12 +4543,16 @@ def build_job_devices(job, log, upi, scale, grid):
     catalogue = device_symbol_catalogue()
     made = {}
 
+    positions, notes = resolve_job_positions(job, gx, gy, upi, scale)
+    for note in notes:
+        log.append('  WARN    {}'.format(note))
+
     for device in job['devices']:
         name = (device.get('name') or '').strip()
         tag = (device.get('tag') or name).strip()
         make = device.get('make') or ''
         model = device.get('model') or ''
-        x, y = job_position(device, gx, gy)
+        x, y = positions.get(name) or job_position(device, gx, gy)
 
         match = find_device_symbol(make, model, catalogue)
         if match:
@@ -4486,7 +4645,14 @@ def wire_job(job, made, log):
 
 def tool_draw_job():
     """Returns (status, summary)."""
-    job, problems = read_job()
+    path, note = pick_job_file()
+    if path is None:
+        if note:
+            vs.AlrtDialog(note)
+            return 'stopped', note
+        return 'cancelled', None
+
+    job, problems = read_job(path)
     if problems and job is None:
         vs.AlrtDialog('Cannot draw the job:\n\n{}'.format('\n'.join(problems[:12])))
         return 'stopped', None
@@ -4508,7 +4674,7 @@ def tool_draw_job():
             0, 'Draw it', 'Cancel', '', '') != 1:
         return 'cancelled', None
 
-    log = ['SCHEMATIC JOB', '']
+    log = ['SCHEMATIC JOB', '', 'Job file: {}'.format(path), '']
     try:
         vs.PushAttrs()
     except Exception:
