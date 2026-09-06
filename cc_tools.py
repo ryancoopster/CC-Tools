@@ -4946,6 +4946,144 @@ def tool_export_prompt():
         len(profile['device_models']), path)
 
 
+# ─── ConnectCAD's shipped device database ────────────────────────────────────
+#
+# 2,734 real devices with their real socket sets. Looking a make/model up here
+# beats letting a language model invent connectors: a Shure ULXD4Q has the
+# sockets Shure gave it, and no amount of plausible guessing will match them.
+#
+# FORMAT, verified against the file rather than assumed:
+#   Tab-separated, 24 columns, NO header row -- line 0 is already a device.
+#   Line terminator is CRLF. Read it as BYTES and normalise the endings by
+#   hand: opening in text mode lets Python's universal newlines mangle it.
+#   Encoding is UTF-8 with a BOM, hence utf-8-sig.
+#
+#   A device owns a BLOCK: it starts on any row where make or model is
+#   non-empty and runs to the next such row. Its first row carries both the
+#   device AND its first socket.
+#
+#   Each row is a socket SERIES, not one socket: column 15 is a quantity, and
+#   the name is the prefix with the number appended VERBATIM -- no separator
+#   is inserted. That is not a guess. 311 quantity>1 rows carry a deliberate
+#   trailing space in the prefix ('MIC ' -> 'MIC 1') while 4,680 deliberately
+#   do not ('HDV_OUT' -> 'HDV_OUT1'); inserting a space would turn the first
+#   group into 'MIC  1'. The binary's own format literal is '%s%d'.
+
+DEVICE_DB_RELATIVE = os.path.join(
+    'Libraries', 'Defaults', 'ConnectCAD', 'ConnectCAD_Database',
+    'ConnectCAD Devices DB.txt')
+
+DB_MAKE, DB_MODEL = 0, 1
+DB_CONN, DB_QTY, DB_SIDE, DB_NAME, DB_SIGNAL, DB_TYPE = 14, 15, 16, 17, 18, 19
+DB_COLUMNS = 20          # the lowest column count a usable row can have
+
+# Parsing 17,127 lines is not free and a job may ask about many devices, so the
+# parsed form is kept for the life of the command.
+_device_db_cache = {}
+
+
+def device_db_paths():
+    """Where the database might be, application copy first.
+
+    ConnectCAD merges an application copy with a per-user one. The user copy is
+    read second so its rows win, which is the same precedence ConnectCAD uses.
+    """
+    found = []
+    for base in ('/Applications/Vectorworks 2026',
+                 os.path.expanduser('~/Library/Application Support/'
+                                    'Vectorworks/2026')):
+        path = os.path.join(base, DEVICE_DB_RELATIVE)
+        if os.path.exists(path):
+            found.append(path)
+    return found
+
+
+def parse_device_db(text):
+    """Rows -> {(make, model): [socket row, ...]}, keyed forgivingly.
+
+    Blocks are delimited by a non-empty make or model, and a device's own row
+    also carries its first socket."""
+    devices = {}
+    current = None
+    for line in text.split('\n'):
+        if not line:
+            continue
+        row = line.split('\t')
+        if len(row) < DB_COLUMNS:
+            continue
+        make = row[DB_MAKE].strip()
+        model = row[DB_MODEL].strip()
+        if make or model:
+            current = {'make': make, 'model': model, 'rows': []}
+            devices[(normalise_model(make), normalise_model(model))] = current
+        if current is None:
+            continue
+        if row[DB_NAME].strip() or row[DB_CONN].strip():
+            current['rows'].append(row)
+    return devices
+
+
+def load_device_db():
+    """The parsed database, or {} if it is not installed."""
+    if _device_db_cache:
+        return _device_db_cache
+    for path in device_db_paths():
+        try:
+            with open(path, 'rb') as f:
+                raw = f.read().decode('utf-8-sig')
+        except Exception:
+            continue
+        # The application and user copies do not agree on line endings, so
+        # both are normalised rather than trusting either.
+        raw = raw.replace('\r\n', '\n').replace('\r', '\n')
+        _device_db_cache.update(parse_device_db(raw))
+    return _device_db_cache
+
+
+def db_socket_specs(entry):
+    """One database device's sockets, expanded, as builder specs.
+
+    A quantity of 4 becomes four sockets. The final name is stripped: 170 rows
+    carry a trailing space that would otherwise produce a socket name ending in
+    one -- and a trailing space is invisible on screen while making the name a
+    different string to everything that references it."""
+    specs = []
+    for row in entry['rows']:
+        prefix = row[DB_NAME]
+        connector = row[DB_CONN].strip()
+        signal = row[DB_SIGNAL].strip()
+        socket_type = (row[DB_TYPE].strip() or 'IO').upper()
+        side = -1 if row[DB_SIDE].strip().upper().startswith('L') else 1
+        symbol = 'skt_L' if side < 0 else 'skt_R'
+        try:
+            quantity = int(row[DB_QTY].strip() or '1')
+        except ValueError:
+            quantity = 1
+        quantity = max(1, min(quantity, 128))
+
+        for index in range(quantity):
+            name = (prefix if quantity == 1
+                    else '{}{}'.format(prefix, index + 1)).strip()
+            if not name:
+                continue
+            specs.append((symbol, name, socket_type, side, signal, connector))
+    return specs
+
+
+def find_db_device(make, model):
+    """The database entry for a make/model, or None.
+
+    Matching is the same forgiving comparison used for device symbols, since
+    the same product is written 'Galaxy 408', 'GALAXY-408' and 'Galaxy_408'
+    depending on who typed it."""
+    if not model:
+        return None
+    database = load_device_db()
+    if not database:
+        return None
+    return database.get((normalise_model(make), normalise_model(model)))
+
+
 # ─── Read a job ──────────────────────────────────────────────────────────────
 def read_job(path=None):
     """Load and validate a job file. Returns (job, problems).
@@ -5212,7 +5350,16 @@ def device_height(device, upi, scale, gy, catalogue=None):
                                    device.get('model') or '', catalogue)
         if match and match.get('height'):
             return match['height']
-    return body_height_for(job_socket_specs(device), upi, scale, gy)
+    specs = job_socket_specs(device)
+    if not specs:
+        # Same precedence the builder uses, or a device whose sockets come from
+        # the database gets measured as if it had none and the section below
+        # it overlaps.
+        entry = find_db_device(device.get('make') or '',
+                               device.get('model') or '')
+        if entry:
+            specs = db_socket_specs(entry)
+    return body_height_for(specs, upi, scale, gy)
 
 
 def section_extent(devices, positions, upi, scale, gy, catalogue=None):
@@ -5316,16 +5463,37 @@ def build_job_devices(job, log, upi, scale, grid):
             log.append('  WARN    {:<30} symbol {} would not place'.format(
                 name[:30], match['symbol']))
 
+        # Precedence, and the reason for it:
+        #   1. a device symbol   -- somebody drew it correctly, sockets placed
+        #   2. the job's sockets -- the circuits reference THESE names, so
+        #                           overriding them would break the wiring
+        #   3. the database      -- real connectors, for a device the job
+        #                           described but did not detail
         specs = job_socket_specs(device)
+        source = 'job'
         if not specs:
-            log.append('  WARN    {:<30} no symbol and no sockets listed'.format(
-                name[:30]))
+            entry = find_db_device(make, model)
+            if entry:
+                specs = db_socket_specs(entry)
+                source = 'database'
+                log.append('  db      {:<30} {} / {}: {} socket(s)'.format(
+                    name[:30], entry['make'], entry['model'], len(specs)))
+                # The job's circuits cannot reference names it never saw, so
+                # the names are logged rather than left to be discovered when
+                # nothing wires.
+                log.append('          sockets: {}'.format(
+                    ', '.join(s[1] for s in specs[:16])
+                    + (' ...' if len(specs) > 16 else '')))
+        if not specs:
+            log.append('  WARN    {:<30} no symbol, no sockets listed, and '
+                       'not in the device database'.format(name[:30]))
         handle, ok = build_device(name, tag, make, model, x, y, specs, log,
                                   upi, scale, grid)
         if handle:
             made[ident] = handle
-            log.append('  built   {:<30} {} socket(s){}'.format(
-                name[:30], len(specs), '' if ok else '  (some sockets failed)'))
+            log.append('  built   {:<30} {} socket(s) from the {}{}'.format(
+                name[:30], len(specs), source,
+                '' if ok else '  (some sockets failed)'))
         else:
             log.append('  FAIL    {:<30} could not be created'.format(name[:30]))
     return made

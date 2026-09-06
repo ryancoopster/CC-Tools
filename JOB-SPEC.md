@@ -62,13 +62,24 @@ because the rules below determine those.
 | `name` | yes | **Unique.** ConnectCAD links objects by name string, so a duplicate is rejected. |
 | `tag` | no | Display Tag. Defaults to `name`. |
 | `make`, `model` | no | If they match a device symbol already in the drawing, that symbol is stamped out instead of a new block being drawn — better, because somebody already laid it out correctly. |
-| `sockets` | yes* | \*Unless a symbol matches. Order matters: sockets stack down their edge in the order listed. |
+| `sockets` | yes* | \*Unless a symbol matches, or the make/model is in ConnectCAD's device database. Order matters: sockets stack down their edge in the order listed. |
 | `column` | no | Horizontal position, 0 upwards. Signal flows left to right, so sources are column 0. |
 | `row` | no | Vertical position, 0 downwards. Coarse — for separating unrelated chains. |
 | `align_to` | no | Sets the vertical position precisely. See below. |
 | `section` | no | Which band of the drawing this block belongs in. See **Sections**. |
 | `id` | no | Unique handle for this block. Defaults to `name`; **required** when a device appears in more than one section. Circuits reference this. |
 | `x`, `y` | no | Explicit drawing units, overriding `column`/`row`. Rarely what you want. |
+
+**If you know the real make and model, give them and omit `sockets`.** CC Tools
+ships with ConnectCAD's device database — 2,734 devices with their actual
+connector sets — and will use it. A Shure ULXD4Q gets the sockets Shure gave
+it, which is better than any guess.
+
+The catch: you then don't know the socket names, so you can't write circuits
+against them. Do one or the other per device — either give `sockets` yourself
+and reference those names in circuits, or give only make/model and leave that
+device unwired for the user to connect. Don't guess names for a device you
+didn't list sockets for.
 
 ### Sockets
 

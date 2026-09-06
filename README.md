@@ -17,7 +17,7 @@ The launcher is split in two: the tools used while drafting, and the ones used w
 | **Match Names and Display Tags** | Finds objects whose Name and Display Tag disagree and lets you choose which one wins — in bulk, or one at a time. |
 | **Spell Check** | Finds likely typos in free-text fields, and doubles as a reviewable find-and-replace across every ConnectCAD object. |
 | **Search ConnectCAD Objects** | Read-only. Searches **every field** of every ConnectCAD object — the ones Vectorworks' own Find and Replace cannot see. Selects the matches in the drawing. |
-| **Draw schematic job** | Opens a file dialog, then builds the devices and wiring from the job file Claude gave you. |
+| **Draw schematic job** | Opens a file dialog, then builds the devices and wiring from the job file Claude gave you. Falls back to ConnectCAD's device database for a device's real connectors. |
 | **Preferences** | Column spacing, row spacing, gap between sections, circuit line mode, device label symbol. |
 | **Export prompt for Claude** | Read-only. Writes a profile of how this drawing is built, to hand Claude so new work matches it. |
 | **Export Reference Schematic** | Read-only. Writes a signal-flow layer out as JSON — devices, their positions and sockets, and the real circuit wiring — for use as a worked example. |
