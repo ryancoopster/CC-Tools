@@ -222,6 +222,51 @@ half the wiring is missing.
   and connector types exactly rather than inventing near-misses. A signal named
   `MILAN PRI` in one place and `Milan Primary` in another is two signals.
 
+## Show a preview first
+
+**Before you hand over the `.json`, draw the schematic as an HTML artifact and
+let the user look at it.** Then wait for them to say go before producing the
+file.
+
+This is not decoration. The preview's job is to make the one failure that is
+otherwise invisible visible: **a circuit whose two ends are not at the same
+height cannot be wired**, and on a preview it shows up immediately as a sloped
+line. Everything else about a bad job you can see in the JSON; that one you
+cannot.
+
+### Draw it to the plug-in's own geometry
+
+Work in grid units, `G`. One grid unit is a quarter inch in a typical drawing,
+so `G = 16` pixels gives a readable preview.
+
+| Thing | Where it goes |
+|---|---|
+| Device top edge | `y` from `align_to`, or `-row × 10G` |
+| Device left edge | `column × 16G`, centred on that |
+| Device width | `12G` |
+| Device height | `(2 + most sockets on either side) × G` |
+| Socket *i* on an edge | `deviceTop − (2 + i) × G`, numbered per edge from 0 |
+| Section | stacked below the previous one, flush |
+
+Left-side sockets sit on the left edge, right-side on the right. A circuit is a
+line from one socket to the other.
+
+### What the preview has to show
+
+- Every device as a labelled block, with its name and its sockets
+- Every circuit as a line between the two sockets it names, **drawn where those
+  sockets actually are** — never straightened, never nudged to look right
+- The cable name along the middle of each line
+- Section bands, labelled
+- **Any sloped line called out explicitly**, in red or similar, with a note
+  saying which circuit it is and that it will not wire
+
+If every line is horizontal, the job is sound. If one slopes, fix the
+`align_to` and show the preview again — do not hand over a file you already
+know draws a schematic that wires nothing.
+
+Keep it plain: boxes, lines, labels. It is a check, not a rendering.
+
 ## Before you send it
 
 Check each of these, because each one produces a silently wrong drawing:
@@ -235,6 +280,7 @@ Check each of these, because each one produces a silently wrong drawing:
       have told the user which ones you could not align).
 - [ ] Every circuit has a `cable` name.
 - [ ] The JSON parses.
+- [ ] A preview was shown and every circuit line came out horizontal.
 - [ ] It is offered as a **downloadable file**, not a code block.
 
 ---
