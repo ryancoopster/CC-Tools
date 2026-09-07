@@ -119,6 +119,33 @@ What you must not do is guess socket names for a device you did not look up.
 A wrong name draws a schematic that wires nothing, and it looks fine until
 somebody checks.
 
+### Show the unused sockets too
+
+A device block carries **every socket it has of that section's signal type** —
+connected or not. An eight-output switch shows eight outputs on the network
+drawing even if only five are used; a speaker shows both its analog inputs even
+if one is spare. Spare capacity is information, and a drawing that hides it
+cannot be read for what is left.
+
+Split them by section, the same way the device is: the analog drawing shows
+that device's unused mic and line connections, the network drawing shows its
+unused network ports. A socket only ever appears on the drawing for its own
+signal.
+
+### Which side a socket goes on
+
+`side` is about the **drawing**, not the socket's electrical nature. Signal
+flows left to right, so:
+
+- On the device a circuit comes **from**, that socket is on the **right**.
+- On the device a circuit goes **to**, that socket is on the **left**.
+
+This catches people out with switches and other `IO` sockets. A switch port
+feeding a speaker is `"side": "R"` on the switch — but the *same kind of port*
+on a switch that is **receiving** an uplink is `"side": "L"` on that block.
+Getting this wrong is not cosmetic: two sockets both on the right cannot be
+joined, and the circuit silently does not wire.
+
 ### Sockets
 
 | Key | Meaning |
@@ -155,6 +182,17 @@ the page:
 "sections": [{"name": "Analog — Stage"}, {"name": "Power — Stage"}],
 "devices": [ ... ]
 ```
+
+### Choose sections by SIGNAL TYPE, and nothing finer
+
+One section per signal type — network, analog, power. **Not** one per subgroup.
+"Network — Main L", "Network — Main R" and "Network — Subs" should be a single
+"Network" section: they carry the same signal and belong on the same drawing.
+
+This matters because of the rule below. Splitting a section splits every device
+that spans it, and a switch broken into three blocks because its outputs were
+filed under three headings is worse than no sections at all. A device should
+appear **once per signal type**, never more.
 
 Two rules follow from bands being separate regions:
 
@@ -305,6 +343,9 @@ Check each of these, because each one produces a silently wrong drawing:
 - [ ] No two devices in the same section share a column unless they are far
       enough apart not to overlap — a fan-out needs a column each.
 - [ ] Every signal is one ConnectCAD defines.
+- [ ] Sections are by signal type only, and no device is split more finely.
+- [ ] Every block shows its unused sockets for that section's signal.
+- [ ] Every circuit leaves a right-hand socket and arrives at a left-hand one.
 - [ ] Cable names were asked about, and are either on every circuit or none.
 - [ ] It is offered as a **downloadable file**, not a code block.
 
