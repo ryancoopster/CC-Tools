@@ -281,4 +281,50 @@ check('T9 zero turns staggering off entirely',
 
 check('T9 the default is on', m.PREF_DEFAULTS['circuit_stagger_inches'] > 0)
 
+# ── T10: devices sharing an X band can never be wired ────────────────────
+# ConnectCAD groups the selection into columns by X-overlap and refuses to
+# wire a single-column selection -- silently, with no error and nothing drawn.
+def at(ident, x, y=0.0):
+    return {'id': ident, 'name': ident.upper(), 'x': x, 'y': y, 'section': 'S',
+            'sockets': [{'name': 'P', 'type': 'IO', 'side': 'R'}]}
+
+def wire(a, b):
+    return {'from': {'device': a, 'socket': 'P'},
+            'to': {'device': b, 'socket': 'P'}}
+
+same = {'devices': [at('a', 0), at('b', 0, -4)], 'circuits': [wire('a', 'b')]}
+pos, _n = m.resolve_job_positions(same, G, G, 1.0, 1.0, m.PREF_DEFAULTS)
+check('T10 same column is caught',
+      len(m.find_column_clashes(same, pos, G)) == 1,
+      repr(m.find_column_clashes(same, pos, G)))
+
+apart = {'devices': [at('a', 0), at('b', 4, -4)], 'circuits': [wire('a', 'b')]}
+pos, _n = m.resolve_job_positions(apart, G, G, 1.0, 1.0, m.PREF_DEFAULTS)
+check('T10 four inches apart is fine',
+      m.find_column_clashes(apart, pos, G) == [], repr(m.find_column_clashes(apart, pos, G)))
+
+# ConnectCAD uses <=, so touching edges count as one column. Devices are 3in
+# wide, so centres exactly 3in apart touch.
+touch = {'devices': [at('a', 0), at('b', 3, -4)], 'circuits': [wire('a', 'b')]}
+pos, _n = m.resolve_job_positions(touch, G, G, 1.0, 1.0, m.PREF_DEFAULTS)
+check('T10 touching edges count as overlapping',
+      len(m.find_column_clashes(touch, pos, G)) == 1,
+      'ConnectCAD tests with <=, so exact contact is one column')
+
+near = {'devices': [at('a', 0), at('b', 3.5, -4)], 'circuits': [wire('a', 'b')]}
+pos, _n = m.resolve_job_positions(near, G, G, 1.0, 1.0, m.PREF_DEFAULTS)
+check('T10 a real gap is not a clash', m.find_column_clashes(near, pos, G) == [])
+
+# One report per device pair, however many circuits run between them.
+many = {'devices': [at('a', 0), at('b', 0, -4)],
+        'circuits': [wire('a', 'b'), wire('a', 'b'), wire('a', 'b')]}
+pos, _n = m.resolve_job_positions(many, G, G, 1.0, 1.0, m.PREF_DEFAULTS)
+check('T10 reported once per pair, not once per circuit',
+      len(m.find_column_clashes(many, pos, G)) == 1,
+      repr(m.find_column_clashes(many, pos, G)))
+check('T10 a circuit to itself is ignored',
+      m.find_column_clashes({'devices': [at('a', 0)],
+                             'circuits': [wire('a', 'a')]},
+                            {'a': (0, 0)}, G) == [])
+
 R.report_and_exit()

@@ -253,6 +253,27 @@ exactly what gets drawn, which is the point of showing it.
 you using the same rule. Useful, but then the preview is your guess at what it
 will do rather than a statement of it.)*
 
+### Two rules that come from how ConnectCAD actually wires
+
+Both were read out of the ConnectCAD binary, and both fail *silently* when
+broken — no error, no warning, just a schematic that is missing circuits.
+
+**A source and its destination must not overlap horizontally.** ConnectCAD
+groups the selected devices into columns by horizontal overlap and refuses to
+wire a selection that comes out as a single column. Devices are 3 in wide, so
+columns 4 in apart are safe; two devices at the same `x` can never be wired to
+each other.
+
+**List a device's circuits in the order its sockets run down the page.**
+ConnectCAD pairs sockets by *position*, not by name: the topmost free source
+socket takes the topmost free destination. So if a switch's `LAN 1`…`LAN 8`
+feed eight speakers, list those eight circuits in that order and stack the
+speakers in the same order. Get the order wrong and every circuit still gets
+made — just onto the wrong sockets, which is harder to spot than a missing one.
+
+The corollary is worth stating: **the vertical order of a stacked column is
+meaningful.** It decides which target receives which circuit.
+
 ### align_to is optional
 
 ```json
@@ -334,6 +355,9 @@ Check each of these, because each one produces a silently wrong drawing:
 - [ ] A preview was shown, with no overlapping blocks and no circuit crossing
       a device body, and the positions in it are the positions in the file.
 - [ ] A fan-out is ONE column of stacked devices, not a diagonal.
+- [ ] No circuit joins two devices that overlap horizontally.
+- [ ] Each device's circuits are listed in the order its sockets run down the
+      page, and its targets are stacked in that same order.
 - [ ] Every signal is one ConnectCAD defines.
 - [ ] Sections are by signal type only, and no device is split more finely.
 - [ ] Every block shows its unused sockets for that section's signal.

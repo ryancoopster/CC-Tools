@@ -5994,6 +5994,58 @@ def layer_context_quietly():
     return active_layer_context([])
 
 
+# How ConnectSelected actually pairs sockets, read out of
+# connectCAD::ConnectSelected_EventSink::ConnectDevices (arm64 0x841e8):
+#
+#   * It contains NO floating-point comparison. Nothing is matched by height.
+#   * Selected devices are grouped into COLUMNS by X-overlap of their bounding
+#     boxes (Utilities::DoBoundsIntersectOnX, 0x1fce80). The test uses <=, so
+#     boxes that merely touch count as the same column.
+#   * If the selection resolves to only ONE column, the command skips wiring
+#     entirely and silently activates an interactive tool instead. Nothing is
+#     drawn and nothing is reported.
+#   * Within a column, devices sort by bounding-box centre Y descending, and
+#     sockets within a device by Y descending -- top to bottom.
+#   * Pairing is then positional and first-free: the Nth source socket takes
+#     the Nth still-free destination socket. The socket NAMES in a job are not
+#     consulted.
+#
+# The last point is why a job must list a device's circuits in the same order
+# as that device's sockets run down the page, and why the tool verifies what
+# was actually created rather than trusting the command.
+DEVICE_BODY_WIDTH_UNITS = 12          # 3 inches on a quarter-inch grid
+
+
+def find_column_clashes(job, positions, gx):
+    """Circuits whose two devices share an X band. Returns [(a, b, overlap)].
+
+    ConnectSelected groups selected devices into columns by X-overlap and does
+    nothing at all when everything lands in one column -- without an error, a
+    dialog, or a trace in the drawing. A source sitting in the same X band as
+    its destination is therefore a circuit that cannot be made, and finding
+    that out afterwards means finding it out from an empty schematic."""
+    width = DEVICE_BODY_WIDTH_UNITS * (gx or 0.25)
+    seen = set()
+    clashes = []
+    for circuit in job.get('circuits') or []:
+        if not isinstance(circuit, dict):
+            continue
+        a = (circuit.get('from') or {}).get('device')
+        b = (circuit.get('to') or {}).get('device')
+        if a not in positions or b not in positions or a == b:
+            continue
+        key = tuple(sorted((a, b)))
+        if key in seen:
+            continue
+        seen.add(key)
+        a_left, a_right = positions[a][0] - width / 2.0, positions[a][0] + width / 2.0
+        b_left, b_right = positions[b][0] - width / 2.0, positions[b][0] + width / 2.0
+        # ConnectCAD's own test is <=, so touching counts as overlapping.
+        if a_left <= b_right and b_left <= a_right:
+            clashes.append((a, b, min(a_right, b_right) - max(a_left, b_left)))
+    return clashes
+
+
 def find_overlaps(job, positions, upi, scale, gy, catalogue=None):
     """Devices that would be drawn on top of one another. Returns [(a, b, by)].
 
@@ -6502,6 +6554,24 @@ def tool_draw_job():
                 'anyway?'.format(listing),
                 1, 'Draw anyway', 'Cancel', '', '') != 1:
             return 'stopped', '{} overlapping device pair(s)'.format(len(clashes))
+
+    column_clashes = find_column_clashes(job, positions, pre_grid[0])
+    if column_clashes:
+        listing = '\n'.join('   {} and {} share an X band'.format(a, b)
+                             for a, b, _o in column_clashes[:8])
+        if len(column_clashes) > 8:
+            listing += '\n   ... and {} more'.format(len(column_clashes) - 8)
+        if vs.AlertQuestion(
+                '{} circuit(s) join devices that overlap horizontally.'.format(
+                    len(column_clashes)),
+                '{}\n\nConnectCAD groups devices into columns by horizontal '
+                'overlap and refuses to wire a selection that is all one '
+                'column -- silently, with no error. These circuits cannot be '
+                'made until the devices are moved into separate columns.\n\n'
+                'Draw it anyway?'.format(listing),
+                1, 'Draw anyway', 'Cancel', '', '') != 1:
+            return 'stopped', '{} circuit(s) join overlapping columns'.format(
+                len(column_clashes))
 
     unknown = unknown_signals(job)
     if unknown:
