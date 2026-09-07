@@ -109,7 +109,7 @@ check('T6 a row with no socket name is dropped',
 check('T6 a missing file is not an error',
       isinstance(m.load_golden_devices(), dict))
 
-# ── T7: the shipped DEVICES.md is valid and clean ────────────────────────
+# ── T7: the shipped JOB-SPEC.md is valid and clean ───────────────────────
 shipped = os.path.join(ROOT, 'JOB-SPEC.md')
 check('T7 JOB-SPEC.md exists', os.path.exists(shipped))
 if os.path.exists(shipped):

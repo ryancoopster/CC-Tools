@@ -221,7 +221,7 @@ So a tool that searched them would, on a normal install, find one manufacturer.
 Ryan's call, and the better design: **do not rely on stock symbols at all** —
 they are inconsistent between manufacturers even once downloaded. Look the
 device up instead, and keep the answer in a curated file so it stays consistent.
-That is `DEVICES.md`.
+That is the device list at the end of `JOB-SPEC.md`.
 
 Symbols already in the OPEN DOCUMENT are still used and still preferred. Those
 are house-made and demonstrably correct; the argument above is only about the

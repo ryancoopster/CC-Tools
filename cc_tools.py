@@ -5042,7 +5042,8 @@ def tool_export_prompt():
 # ─── The golden device list ──────────────────────────────────────────────────
 #
 # A curated markdown file of devices and their real connectors, kept in
-# ~/Documents/CC Tools/devices.md and seeded from DEVICES.md in the repo.
+# ~/Documents/CC Tools/, seeded from the device list at the end of
+# JOB-SPEC.md -- the same one file the user hands Claude.
 #
 # WHY THIS EXISTS, given ConnectCAD already ships a database of 2,734 devices:
 # consistency. The shipped data is uneven -- socket naming varies by
