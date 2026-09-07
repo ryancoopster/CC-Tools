@@ -171,4 +171,72 @@ narrow = m.db_physical({'rows': [row]})
 check('T6 a narrow device is not called racked',
       'racked' not in narrow and 'rack_u' not in narrow, repr(narrow))
 
+# ── T7: columns stack, and an explicit arrangement is never overridden ───
+# Verified in a live drawing: circuits offset by 0.10, 0.85 and 1.60 inches all
+# wired, with ConnectCAD drawing elbows. Alignment was never required, so a
+# fan-out belongs in one stacked column rather than a diagonal.
+def one_socket(ident, column, row):
+    return {'id': ident, 'name': ident.upper(), 'column': column, 'row': row,
+            'section': 'S',
+            'sockets': [{'name': 'IN 1', 'type': 'IN', 'side': 'L'}]}
+
+job = {'devices': [
+    {'id': 'src', 'name': 'SRC', 'column': 0, 'row': 0, 'section': 'S',
+     'sockets': [{'name': 'OUT %d' % n, 'type': 'OUT', 'side': 'R'}
+                 for n in range(1, 6)]}]
+    + [one_socket('t%d' % n, 1, n) for n in range(5)], 'circuits': []}
+pos, _n = m.resolve_job_positions(job, G, G, 1.0, 1.0, m.PREF_DEFAULTS)
+check('T7 a stacked fan-out does not overlap',
+      m.find_overlaps(job, pos, 1.0, 1.0, G) == [],
+      repr(m.find_overlaps(job, pos, 1.0, 1.0, G)))
+check('T7 the fan-out is one column',
+      len({round(pos['t%d' % n][0], 4) for n in range(5)}) == 1,
+      repr([pos['t%d' % n][0] for n in range(5)]))
+tops = [pos['t%d' % n][1] for n in range(5)]
+check('T7 stacked in row order', tops == sorted(tops, reverse=True), repr(tops))
+gaps = [round(tops[i] - tops[i + 1], 4) for i in range(4)]
+check('T7 spaced by height plus the gap', set(gaps) == {1.25}, repr(gaps))
+
+wide = 1 * m.PREF_DEFAULTS['column_inches'] / 0.25 * G
+check('T7 two columns wide, not nine',
+      abs(pos['t0'][0] - pos['src'][0] - wide) < 1e-9,
+      '%s vs %s' % (pos['t0'][0], pos['src'][0]))
+
+# ── T8: an explicit arrangement is the job\'s, not the stacker\'s ─────────
+# The chat decides the layout and shows it to the user in a preview. If the
+# stacker moved those devices the preview would be a lie.
+placed = {'devices': [
+    dict(one_socket('a', 0, 0), x=0, y=0),
+    dict(one_socket('b', 0, 1), x=0, y=-9.0),
+    dict(one_socket('c', 0, 2), x=0, y=-18.0),
+], 'circuits': []}
+pos, _n = m.resolve_job_positions(placed, G, G, 1.0, 1.0, m.PREF_DEFAULTS)
+check('T8 explicit y is kept exactly',
+      [pos['a'][1], pos['b'][1], pos['c'][1]] == [0.0, -9.0, -18.0],
+      repr([pos['a'][1], pos['b'][1], pos['c'][1]]))
+
+# Mixed: some placed, some not. The placed ones must not move.
+mixed = {'devices': [
+    dict(one_socket('p', 0, 0), x=0, y=-5.0),
+    one_socket('q', 1, 0), one_socket('r', 1, 1),
+], 'circuits': []}
+pos, _n = m.resolve_job_positions(mixed, G, G, 1.0, 1.0, m.PREF_DEFAULTS)
+check('T8 a placed device is untouched by the stacker', pos['p'][1] == -5.0,
+      repr(pos['p']))
+check('T8 unplaced ones still stack', pos['q'][1] > pos['r'][1],
+      repr((pos['q'], pos['r'])))
+
+# align_to still wins over stacking, and is exempt.
+pinned = {'devices': [
+    {'id': 'f', 'name': 'F', 'column': 0, 'row': 0, 'section': 'S',
+     'sockets': [{'name': 'OUT 1', 'type': 'OUT', 'side': 'R'},
+                 {'name': 'OUT 2', 'type': 'OUT', 'side': 'R'}]},
+    dict(one_socket('g', 1, 0),
+         align_to={'device': 'f', 'socket': 'OUT 2', 'my_socket': 'IN 1'}),
+], 'circuits': []}
+pos, _n = m.resolve_job_positions(pinned, G, G, 1.0, 1.0, m.PREF_DEFAULTS)
+fy = pos['f'][1] - m.socket_drop(1, 1.0, 1.0, G)
+gy_ = pos['g'][1] - m.socket_drop(0, 1.0, 1.0, G)
+check('T8 align_to survives stacking', abs(fy - gy_) < 1e-9, '%s vs %s' % (fy, gy_))
+
 R.report_and_exit()

@@ -217,60 +217,51 @@ where the bare name would not have been.
 
 ---
 
-## The one rule that decides whether it works
+## Layout: you decide it, in columns
 
-**ConnectCAD only wires two sockets that sit at the same height.** Wiring is not
-a property of the circuit list — the circuit list says what *should* connect,
-and the geometry is what actually connects it. Two devices whose sockets are a
-quarter inch out of line produce a schematic with no circuits in it.
+Signal flows left to right. Sources on the left, destinations to their right.
 
-Sockets hang from the top of a device on a fixed pitch: the first is two grid
-units below the top, then one grid unit each after that, counted separately
-down the left and right edges.
+**A fan-out is ONE column.** A switch feeding eight speakers is the switch at
+one x and all eight speakers stacked at the next. Not a diagonal — an earlier
+version of this file said to give each its own column, and it was wrong,
+producing drawings four times wider than they needed to be.
 
-**So: for every circuit, give the destination device an `align_to`.**
+**Circuits route themselves.** ConnectCAD draws each with corners, around what
+is in the way. Two sockets do **not** need to be at the same height: tested in
+a live drawing, circuits offset by 0.10", 0.85" and 1.60" all wired and drew
+clean elbows.
+
+### Work out the stack yourself
+
+You can, because you know every socket you listed:
+
+```
+device height = (2 + most sockets on either side) × 0.25 in
+next y        = this y − this height − 0.5 in
+```
+
+So a column of one-socket speakers starts at `y: 0` and steps `-1.25`, `-2.5`,
+`-3.75`… A three-socket switch is 1.25 in tall; a nine-socket one is 2.75 in.
+
+Columns are 4 in apart unless you have a reason otherwise, and a device is
+3 in wide, so `x: 0`, `x: 4`, `x: 8`.
+
+Put the resulting `x` and `y` on every device. Then the preview you show is
+exactly what gets drawn, which is the point of showing it.
+
+*(If you give `column` and `row` instead, the plug-in stacks that column for
+you using the same rule. Useful, but then the preview is your guess at what it
+will do rather than a statement of it.)*
+
+### align_to is optional
 
 ```json
-"align_to": {"device": "<the other device>", "socket": "<its socket>", "my_socket": "<my socket>"}
+"align_to": {"device": "<other device>", "socket": "<its socket>", "my_socket": "<mine>"}
 ```
 
-That says "put me at whatever height makes my socket line up with theirs". The
-plug-in computes the y using the same pitch it draws with, so the two cannot
-drift apart. Never work the offsets out yourself — you would have to know the
-drawing's grid size, and you don't.
-
-### One device fanning out to many needs a column each
-
-This is the trap, and it is arithmetic rather than judgement. Sockets are one
-grid unit apart. A device is at least **three** grid units tall. So if a switch
-feeds eight speakers and you align each to the next socket down **while leaving
-them all in one column**, consecutive speakers sit one unit apart while being
-three units tall — they overlap, every time, and ConnectCAD cannot route to a
-socket buried under another device.
-
-**Give each one its own column**, stepping right as you step down:
-
-```
-speaker 1  column 1   aligned to LAN 1
-speaker 2  column 2   aligned to LAN 2
-speaker 3  column 3   aligned to LAN 3
-```
-
-A daisy-chain already does this naturally — each device in the next column —
-which is why chains work and fan-outs do not. The plug-in now refuses a job
-whose devices would overlap, so getting this wrong costs a round trip.
-
-Alignment chains: if speaker 2 aligns to the switch, speaker 3 can align to
-speaker 2. Something in each chain must be positioned by `column`/`row` alone,
-or there is no fixed point to measure from. Alignment works **within** a
-section only — bands are stacked afterwards, so aligning across them is
-meaningless and is reported as an error.
-
-**A device can only be aligned once.** If a device is fed from two different
-sources, you can only line up one of those circuits. Align the one that matters
-most, and tell the user in your reply which circuits will need dragging into
-place by hand — that is far more useful than silently drawing a schematic where
-half the wiring is missing.
+Pins a device so one of its sockets sits level with a socket on another. Use it
+where a straight run genuinely reads better — a short daisy-chain, or a device
+that should line up with its feed. **It is not required for wiring.**
 
 ## Conventions worth following
 
@@ -289,11 +280,9 @@ half the wiring is missing.
 let the user look at it.** Then wait for them to say go before producing the
 file.
 
-This is not decoration. The preview's job is to make the one failure that is
-otherwise invisible visible: **a circuit whose two ends are not at the same
-height cannot be wired**, and on a preview it shows up immediately as a sloped
-line. Everything else about a bad job you can see in the JSON; that one you
-cannot.
+**The preview is the arrangement.** You decide where every device sits, the
+user sees exactly that, and the positions you showed go into the file. So the
+preview is not an illustration of the job — it *is* the job, drawn.
 
 ### Draw it to the plug-in's own geometry
 
@@ -302,7 +291,7 @@ so `G = 16` pixels gives a readable preview.
 
 | Thing | Where it goes |
 |---|---|
-| Device top edge | `y` from `align_to`, or `-row × 10G` |
+| Device top edge | the `y` you chose |
 | Device left edge | `column × 16G`, centred on that |
 | Device width | `12G` |
 | Device height | `(2 + most sockets on either side) × G` |
@@ -316,15 +305,16 @@ line from one socket to the other.
 
 - Every device as a labelled block, with its name and its sockets
 - Every circuit as a line between the two sockets it names, **drawn where those
-  sockets actually are** — never straightened, never nudged to look right
-- The cable name along the middle of each line
+  sockets actually are** — sloped is fine, that is what elbows are for
+- The cable name along the middle of each line, if cable names were wanted
 - Section bands, labelled
-- **Any sloped line called out explicitly**, in red or similar, with a note
-  saying which circuit it is and that it will not wire
+- **Any two device blocks that overlap, called out in red**
+- **Any circuit that passes through a device body, called out in red**
 
-If every line is horizontal, the job is sound. If one slopes, fix the
-`align_to` and show the preview again — do not hand over a file you already
-know draws a schematic that wires nothing.
+Overlapping blocks mean the stack arithmetic is wrong. A circuit crossing a
+body usually means a device sits between two that should be beside each other.
+Fix it and show the preview again rather than handing over a file you already
+know draws badly.
 
 Keep it plain: boxes, lines, labels. It is a check, not a rendering.
 
@@ -341,9 +331,9 @@ Check each of these, because each one produces a silently wrong drawing:
       have told the user which ones you could not align).
 - [ ] Every circuit has a `cable` name.
 - [ ] The JSON parses.
-- [ ] A preview was shown and every circuit line came out horizontal.
-- [ ] No two devices in the same section share a column unless they are far
-      enough apart not to overlap — a fan-out needs a column each.
+- [ ] A preview was shown, with no overlapping blocks and no circuit crossing
+      a device body, and the positions in it are the positions in the file.
+- [ ] A fan-out is ONE column of stacked devices, not a diagonal.
 - [ ] Every signal is one ConnectCAD defines.
 - [ ] Sections are by signal type only, and no device is split more finely.
 - [ ] Every block shows its unused sockets for that section's signal.

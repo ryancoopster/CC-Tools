@@ -4440,6 +4440,7 @@ PREF_DEFAULTS = {
     # 0 = sections sit flush, which is how these drawings are actually laid
     # out: contiguous regions of a dense field, with no space between them.
     'section_gap_inches': 0.0,  # blank space between sections
+    'device_gap_inches': 0.5,   # blank space between stacked devices in a column
     'circuit_type': '',         # '' = leave ConnectCAD's own default alone
     'label_symbol': '',         # '' = leave ConnectCAD's own default alone
 }
@@ -4472,6 +4473,7 @@ PREF_RANGES = {
     'column_inches': (0.25, 240.0),
     'row_inches': (0.25, 240.0),
     'section_gap_inches': (0.0, 240.0),
+    'device_gap_inches': (0.0, 240.0),
 }
 
 
@@ -5754,6 +5756,56 @@ def socket_stack_index(device, socket_name):
     return None, None
 
 
+def stack_columns(devices, positions, upi, scale, gy, prefs, catalogue=None):
+    """Stack each column by real device heights, so overlap cannot happen.
+
+    ConnectCAD routes a circuit with elbows -- it does NOT need its two sockets
+    at the same height. That was verified in a live drawing: three circuits
+    from one device to three targets at three different heights all wired, and
+    ConnectCAD drew each with a corner.
+
+    So a fan-out belongs in ONE column, stacked. The plug-in places them,
+    because it is the only party that knows how tall a device will be: the
+    height depends on socket count, on any matching symbol, and on the grid.
+    Asking a job's author to work that out is asking them to guess.
+
+    Devices carrying align_to keep the position alignment gave them; everything
+    else stacks in row order."""
+    gap = prefs.get('device_gap_inches', PREF_DEFAULTS['device_gap_inches'])
+    columns = {}
+    for device in devices:
+        if isinstance(device.get('align_to'), dict):
+            continue          # its y is already decided
+        # An explicit y is the job's own arrangement, worked out in the chat
+        # and shown to the user in a preview before the file was handed over.
+        # Overriding it here would make the preview a lie.
+        if device.get('x') is not None and device.get('y') is not None:
+            continue
+        ident = job_device_id(device)
+        if ident not in positions:
+            continue
+        columns.setdefault(round(positions[ident][0], 4), []).append(device)
+
+    for _x, members in sorted(columns.items()):
+        def row_of(device):
+            try:
+                return int(device.get('row') or 0)
+            except (TypeError, ValueError):
+                return 0
+        members.sort(key=row_of)
+
+        top = None
+        for device in members:
+            ident = job_device_id(device)
+            x, y = positions[ident]
+            if top is None:
+                top = y            # the first device keeps where it was put
+            else:
+                y = top
+            positions[ident] = (x, y)
+            top = y - device_height(device, upi, scale, gy, catalogue) - gap
+
+
 def align_within_section(devices, positions, upi, scale, gy):
     """Apply every align_to inside ONE section. Returns notes.
 
@@ -5995,6 +6047,10 @@ def resolve_job_positions(job, gx, gy, upi=1.0, scale=1.0, prefs=None,
         devices = by_section.get(section)
         if not devices:
             continue
+        # Stack first, then align: a device pinned by align_to must not be
+        # shoved by the stacker, and the stacker needs the others settled
+        # before it can measure the section.
+        stack_columns(devices, positions, upi, scale, gy, prefs, catalogue)
         notes.extend(align_within_section(devices, positions, upi, scale, gy))
 
         top, bottom = section_extent(devices, positions, upi, scale, gy,
