@@ -3466,18 +3466,84 @@ DEVICE_PHYSICAL_FIELDS = (
 )
 
 
-def apply_physical_properties(handle, entry, upi, log=None):
-    """Write a curated device's physical properties onto the Device.
+MM_TO_INCHES = 1.0 / 25.4
+RACK_UNIT_INCHES = 1.75
 
-    Lengths are stored in the document's units, so the inches the curated list
-    holds are scaled by units-per-inch. Anything the list does not know is left
-    alone rather than written as zero: a blank field says "not recorded", a
-    zero says "weighs nothing"."""
+
+def golden_physical(entry):
+    """A curated device's physical properties, normalised. {} if unknown.
+
+    Inches, kilograms and watts, whatever the file wrote them as."""
     if not entry:
+        return {}
+    out = {}
+    for key in ('width', 'height', 'depth', 'weight', 'power'):
+        value = golden_number(entry, key)
+        if value is not None:
+            out[key] = value
+    racked = golden_is_rack_mounted(entry)
+    if racked is not None:
+        out['racked'] = racked
+    rack_u = golden_number(entry, 'rack u')
+    if rack_u is not None:
+        out['rack_u'] = rack_u
+    return out
+
+
+def db_physical(entry):
+    """The same, from ConnectCAD's shipped database. {} if it knows nothing.
+
+    Its dimensions are MILLIMETRES; everything here is inches, so they are
+    converted rather than written as-is into a field the drawing reads in its
+    own units. Rack height is derived from the measured height because the
+    database has no column for it -- that is arithmetic on real data, not a
+    guess, and it is only done for something a rack width says is racked."""
+    if not entry or not entry.get('rows'):
+        return {}
+    row = entry['rows'][0]
+
+    def number(index):
+        try:
+            value = float((row[index] or '').strip())
+        except (TypeError, ValueError, IndexError):
+            return None
+        return value if value else None
+
+    out = {}
+    for key, index in (('width', 2), ('height', 3), ('depth', 4)):
+        value = number(index)
+        if value:
+            out[key] = value * MM_TO_INCHES
+    for key, index in (('weight', 5), ('power', 6)):
+        value = number(index)
+        if value:
+            out[key] = value
+    # A 19" front panel is the tell for rack mounting; the database has no
+    # flag of its own.
+    if out.get('width') and 18.5 <= out['width'] <= 19.5:
+        out['racked'] = True
+        if out.get('height'):
+            units = out['height'] / RACK_UNIT_INCHES
+            if abs(units - round(units)) < 0.15 and round(units) >= 1:
+                out['rack_u'] = float(round(units))
+    return out
+
+
+def apply_physical_properties(handle, physical, upi, log=None, source=''):
+    """Write physical properties onto a Device. Returns the fields written.
+
+    `physical` is the normalised dict from golden_physical or db_physical:
+    inches, kilograms, watts. Lengths are scaled into the document's units on
+    the way in.
+
+    Anything unknown is left alone rather than written as zero. A blank field
+    says "not recorded"; a zero says "weighs nothing", and a schedule taken off
+    that looks complete and is wrong."""
+    if not physical:
         return []
     written = []
     for prop, field, kind in DEVICE_PHYSICAL_FIELDS:
-        value = golden_number(entry, prop)
+        value = physical.get(prop)
         if value is None:
             continue
         if kind == 'length':
@@ -3485,19 +3551,34 @@ def apply_physical_properties(handle, entry, upi, log=None):
         if write_field(handle, field, '{:g}'.format(value)):
             written.append(field)
 
-    racked = golden_is_rack_mounted(entry)
-    if racked is not None:
+    if 'racked' in physical:
         if write_field(handle, 'width_R',
-                       'full-rack' if racked else 'non-rack'):
+                       'full-rack' if physical['racked'] else 'non-rack'):
             written.append('width_R')
-    rack_u = golden_number(entry, 'rack u')
-    if rack_u is not None and write_field(handle, 'heightU',
-                                          '{:g}'.format(rack_u)):
-        written.append('heightU')
+    if physical.get('rack_u') is not None:
+        if write_field(handle, 'heightU', '{:g}'.format(physical['rack_u'])):
+            written.append('heightU')
 
     if written and log is not None:
-        log.append('          physical: {}'.format(', '.join(written)))
+        log.append('          physical ({}): {}'.format(
+            source or 'unknown source', ', '.join(written)))
     return written
+
+
+def device_physical(make, model):
+    """Physical properties for a make/model, and where they came from.
+
+    The curated list first, because it is the house's own answer; ConnectCAD's
+    shipped database second. Returns ({}, '') when neither knows the device --
+    which is a thing worth SAYING, since a device with no dimensions is
+    invisible to any schedule taken off the drawing."""
+    physical = golden_physical(find_golden_device(make, model))
+    if physical:
+        return physical, 'curated list'
+    physical = db_physical(find_db_device(make, model))
+    if physical:
+        return physical, 'device database'
+    return {}, ''
 
 
 def build_device(name, tag, make, model, x, y, socket_specs, log,
@@ -3523,8 +3604,15 @@ def build_device(name, tag, make, model, x, y, socket_specs, log,
             description = '{}_{}'.format(make, model).strip('_')
         if description:
             write_field(handle, 'description', description)
-        apply_physical_properties(handle, find_golden_device(make, model),
-                                  upi, log)
+        physical, physical_source = device_physical(make, model)
+        if physical:
+            apply_physical_properties(handle, physical, upi, log,
+                                      physical_source)
+        elif make or model:
+            # Said out loud. This used to be silent, so a run that wrote no
+            # dimensions at all looked exactly like one that wrote them.
+            log.append('          physical: nothing known for {} / {} -- add '
+                       'it to the curated list'.format(make or '?', model or '?'))
         try:
             vs.ResetObject(handle)
         except Exception:

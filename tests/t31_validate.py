@@ -95,4 +95,80 @@ check('T5 description falls back to Make_Model',
 check('T5 physical properties are applied',
       'apply_physical_properties' in build)
 
+# ── T6: physical properties, and saying so when there are none ───────────
+# The first run wrote no dimensions and said nothing, so a job that found no
+# physical data looked exactly like one that applied it.
+from mockvs import Obj
+
+m._golden_cache.clear()
+m._golden_cache.update(m.parse_golden_devices("""
+## Known | Device
+
+- Width: 19 in
+- Height: 1.75 in
+- Weight: 7.6 kg
+- Power: 250 W
+- Rack mounted: yes
+- Rack U: 1
+
+| Socket | Type |
+|---|---|
+| A | IN |
+"""))
+phys, source = m.device_physical('Known', 'Device')
+check('T6 curated properties are found', source == 'curated list', source)
+check('T6 inches are kept as inches', phys['width'] == 19.0, repr(phys))
+check('T6 rack height read', phys['rack_u'] == 1.0, repr(phys))
+
+d = Obj('Device', {'width': '', 'height': '', 'depth': '', 'weight': '',
+                   'power': '', 'width_R': '', 'heightU': ''})
+log = []
+written = m.apply_physical_properties(d, phys, 1.0, log, 'curated list')
+check('T6 written onto the device', set(written) >= {'width', 'height', 'weight',
+                                                     'power', 'width_R', 'heightU'},
+      repr(written))
+check('T6 rack width from the flag', d.fields['width_R'] == 'full-rack',
+      repr(d.fields))
+check('T6 the source is logged', log and 'curated list' in log[0], repr(log))
+
+# Document units: a drawing in feet must get feet, not inches.
+feet = Obj('Device', {'width': '', 'height': '', 'depth': '', 'weight': '',
+                      'power': '', 'width_R': '', 'heightU': ''})
+m.apply_physical_properties(feet, phys, 1.0 / 12.0)
+# Tolerance matches the storage format: values are written with '{:g}', which
+# keeps six significant figures -- ample for a device dimension.
+check('T6 lengths scale into document units',
+      abs(float(feet.fields['width']) - 19.0 / 12.0) < 1e-4,
+      repr(feet.fields['width']))
+check('T6 weight is NOT scaled', feet.fields['weight'] == '7.6',
+      repr(feet.fields['weight']))
+
+# Nothing known: write nothing, and never a zero.
+blank = Obj('Device', {'width': '', 'weight': ''})
+check('T6 an empty dict writes nothing',
+      m.apply_physical_properties(blank, {}, 1.0) == []
+      and blank.fields['weight'] == '', repr(blank.fields))
+check('T6 an unknown device reports no source',
+      m.device_physical('Nobody', 'Nothing') == ({}, ''))
+
+# The shipped database is the fallback, in millimetres.
+db = m.db_physical({'rows': [[''] * 20]})
+check('T6 an empty database row yields nothing', db == {}, repr(db))
+row = [''] * 20
+row[2], row[3], row[4], row[5], row[6] = '482.6', '44.45', '262.89', '3.84', '30'
+mm = m.db_physical({'rows': [row]})
+check('T6 millimetres convert to inches',
+      abs(mm['width'] - 19.0) < 0.02 and abs(mm['height'] - 1.75) < 0.02,
+      repr(mm))
+check('T6 a 19-inch panel is recognised as racked', mm.get('racked') is True)
+check('T6 rack height derived from the measured height',
+      mm.get('rack_u') == 1.0, repr(mm))
+check('T6 weight and power pass through unconverted',
+      mm['weight'] == 3.84 and mm['power'] == 30.0, repr(mm))
+
+row[2] = '200'          # not a rack panel
+narrow = m.db_physical({'rows': [row]})
+check('T6 a narrow device is not called racked',
+      'racked' not in narrow and 'rack_u' not in narrow, repr(narrow))
+
 R.report_and_exit()

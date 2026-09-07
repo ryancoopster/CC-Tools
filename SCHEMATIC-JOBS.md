@@ -28,11 +28,18 @@ file you hand Claude. Claude writes circuits against the socket names in it,
 and puts those sockets in the job, so the plug-in builds exactly what Claude
 designed. That is the normal path and it needs no setup.
 
-**Optionally**, drop a copy of the file in `~/Documents/CC Tools/` (as
-`devices.md` or under its own name). The plug-in reads the device list out of
-it and ignores the spec prose. This only matters for a job that names a device
-*without* listing its sockets — then your curated entry is used instead of
-ConnectCAD's shipped database. Nothing breaks if you skip it.
+**Also drop a copy of the file in `~/Documents/CC Tools/`** (as `devices.md`
+or under its own name). The plug-in reads the device list out of it and ignores
+the spec prose.
+
+Sockets do not depend on this — the job carries them. **Physical properties
+do**: dimensions, weight, power draw and rack height live only in the device
+list, so without the copy a device gets them only if ConnectCAD's shipped
+database happens to know it. For the Meyer and Luminex equipment in these
+drawings, it mostly does not.
+
+The report says which source each device's properties came from, and says so
+when there were none.
 
 It ships seeded from the Geffen Hall drawing — 37 devices, 23 of them carrying
 measured dimensions, weights and rack heights from the rack layout. Add to it

@@ -10,10 +10,12 @@ to download.
 That is the whole flow: **this file goes to Claude, the `.json` Claude gives
 back goes to the plug-in.**
 
-*(Optional: the same file can also be dropped in `~/Documents/CC Tools/`. The
-plug-in reads the device list out of it and ignores the rest, which only
-matters for a job that names a device without listing its sockets. Nothing
-breaks without it.)*
+**Also drop a copy of this file in `~/Documents/CC Tools/`.** The plug-in reads
+the device list out of it and ignores the rest. Sockets do not need it — the
+job carries those — but **dimensions, weight, power and rack height do**, since
+the job does not carry them. Without the copy, a device gets its physical data
+only if ConnectCAD's own database happens to know it, which for most real
+equipment it does not.
 
 ---
 
