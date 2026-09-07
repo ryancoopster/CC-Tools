@@ -110,8 +110,8 @@ check('T6 a missing file is not an error',
       isinstance(m.load_golden_devices(), dict))
 
 # ── T7: the shipped DEVICES.md is valid and clean ────────────────────────
-shipped = os.path.join(ROOT, 'DEVICES.md')
-check('T7 DEVICES.md exists', os.path.exists(shipped))
+shipped = os.path.join(ROOT, 'JOB-SPEC.md')
+check('T7 JOB-SPEC.md exists', os.path.exists(shipped))
 if os.path.exists(shipped):
     parsed = m.parse_golden_devices(open(shipped, encoding='utf-8').read())
     check('T7 it parses to real devices', len(parsed) >= 20, '%d' % len(parsed))
@@ -220,5 +220,76 @@ if os.path.exists(shipped):
         check('T10 %s: %gU x 1.75 in = its height' % (key[1][:18], u),
               abs(h - u * 1.75) < 0.06, 'height %s, %s U' % (h, u))
     check('T10 several devices were cross-checked', checked >= 5, '%d' % checked)
+
+# ── T11: one file carries the spec AND the device list ───────────────────
+# They were merged so a user hands Claude a single file. The risk is the
+# spec's own markdown tables being read as device sockets.
+FENCED = """# A spec with examples
+
+The format looks like this:
+
+```
+## Example Make | Example Model
+
+| Socket | Type | Signal | Connector | Side |
+|---|---|---|---|---|
+| NOT_REAL | IN | LAN | EC-6A | L |
+```
+
+### Devices
+
+| Key | Required | Meaning |
+|---|---|---|
+| name | yes | the link key |
+
+---
+
+## Real Make | Real Model
+
+| Socket | Type | Signal | Connector | Side |
+|---|---|---|---|---|
+| IN 1 | IN | LINE | XLR3M | L |
+"""
+F = m.parse_golden_devices(FENCED)
+check('T11 a device inside a code fence is not real',
+      (m.normalise_model('Example Make'),
+       m.normalise_model('Example Model')) not in F, repr(sorted(F)))
+check('T11 the real device is found', len(F) == 1, repr(sorted(F)))
+real = F[(m.normalise_model('Real Make'), m.normalise_model('Real Model'))]
+check('T11 a spec table before it is not absorbed',
+      [s['socket'] for s in real['sockets']] == ['IN 1'],
+      repr(real['sockets']))
+check('T11 tildes fence too',
+      len(m.parse_golden_devices('~~~\n## A | B\n~~~\n')) == 0)
+
+# The shipped file must survive the same trap.
+if os.path.exists(shipped):
+    junk = {'Key', 'Socket', 'Required', 'Meaning', 'name', 'signal', 'cable'}
+    polluted = [k for k, v in parsed.items()
+                if any(s['socket'] in junk for s in v['sockets'])]
+    check('T11 the shipped file has no spec tables in its devices',
+          not polluted, repr(polluted))
+    check('T11 no device named from a fenced example',
+          not any('example' in (k[0] + k[1]) for k in parsed), repr(sorted(parsed)[:3]))
+
+# ── T12: either filename is accepted ─────────────────────────────────────
+import tempfile
+for name in ('devices.md', 'JOB-SPEC.md', 'job-spec.md'):
+    d = tempfile.mkdtemp()
+    m.BASE_FOLDER = d
+    with open(os.path.join(d, name), 'w', encoding='utf-8') as f:
+        f.write('## A | B\n\n| Socket | Type |\n|---|---|\n| X | IN |\n')
+    # Compared case-insensitively: macOS matches JOB-SPEC.md for a lookup of
+    # job-spec.md, so the path comes back in whichever casing the candidate
+    # list tried first. Both spellings stay in the list for case-sensitive
+    # filesystems, where they are genuinely different files.
+    check('T12 %s is found' % name,
+          os.path.basename(m.golden_path()).lower() == name.lower(),
+          m.golden_path())
+    m._golden_cache.clear()
+    check('T12 %s parses' % name, len(m.load_golden_devices()) == 1)
+m.BASE_FOLDER = tempfile.mkdtemp()
+check('T12 a missing file returns the default name',
+      m.golden_path().endswith('devices.md'), m.golden_path())
 
 R.report_and_exit()

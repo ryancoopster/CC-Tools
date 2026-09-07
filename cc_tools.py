@@ -5069,7 +5069,10 @@ def tool_export_prompt():
 # change and extra columns are ignored. Prose between entries is ignored too,
 # which is what makes it a document rather than a data file.
 
+# The user copies ONE file here -- the spec they hand Claude, which carries the
+# device list at the end. Either name is accepted so nobody has to rename it.
 GOLDEN_FILE = 'devices.md'
+GOLDEN_FILES = ('devices.md', 'JOB-SPEC.md', 'job-spec.md')
 GOLDEN_COLUMNS = ('socket', 'type', 'signal', 'connector', 'side')
 
 # Physical properties, written as "- Key: value" lines between a device's
@@ -5092,6 +5095,11 @@ _golden_cache = {}
 
 
 def golden_path():
+    """The curated list, whichever accepted name it was saved under."""
+    for name in GOLDEN_FILES:
+        candidate = os.path.join(BASE_FOLDER, name)
+        if os.path.exists(candidate):
+            return candidate
     return os.path.join(BASE_FOLDER, GOLDEN_FILE)
 
 
@@ -5121,8 +5129,19 @@ def parse_golden_devices(text):
     devices = {}
     current = None
     header = None
+    fenced = False
     for raw in text.split('\n'):
         line = raw.strip()
+
+        # Skip fenced code blocks. The format is documented BY EXAMPLE inside
+        # this same file, so without this the example device is parsed as a
+        # real one -- and the file now carries the whole job spec, which has
+        # examples of its own.
+        if line.startswith('```') or line.startswith('~~~'):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
 
         if line.startswith('##') and '|' in line:
             title = line.lstrip('#').strip()

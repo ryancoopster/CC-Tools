@@ -6,10 +6,10 @@ back a file.
 
 ## The flow
 
-1. **Give Claude [`JOB-SPEC.md`](JOB-SPEC.md) and [`DEVICES.md`](DEVICES.md).**
-   Drag both into a new Claude conversation (claude.ai or the desktop app).
-   The first teaches it the format and the rules; the second tells it the real
-   connectors of devices you use, so it does not invent any. Do this once per
+1. **Give Claude [`JOB-SPEC.md`](JOB-SPEC.md).** Drag it into a new Claude
+   conversation (claude.ai or the desktop app). That one file teaches it the
+   format and the rules, and carries the device list — the real connectors of
+   the devices you use, so it does not invent any. Do this once per
    conversation.
 2. **Describe what you want.** Plain English. *"A Luminex 10i-IP feeding four
    Meyer TIGRA-L arrays over Milan primary, one array per output."* Go back and
@@ -23,17 +23,19 @@ Undo works normally if the result isn't what you wanted.
 
 ## The curated device list
 
-[`DEVICES.md`](DEVICES.md) holds devices and their real connectors. **Copy it to
-`~/Documents/CC Tools/devices.md`** — that is where the plug-in reads it from —
-and hand the same file to Claude.
+The device list lives at the end of [`JOB-SPEC.md`](JOB-SPEC.md) — the same
+file you hand Claude. **Copy it to `~/Documents/CC Tools/devices.md`** as well;
+that is where the plug-in reads it from. (It will also accept the file saved
+under its own name, `JOB-SPEC.md`.)
 
 Both sides then work from one source: Claude writes circuits against the socket
-names in it, and the plug-in builds those exact sockets. They cannot disagree,
-which is the whole point.
+names in it, and the plug-in builds those exact sockets, ignoring the spec
+prose around them. They cannot disagree, which is the whole point.
 
-It ships seeded from the Geffen Hall drawing — 28 devices, whitespace
-normalised. Add to it whenever a schematic needs a device it does not cover;
-that is the moment a model would otherwise guess.
+It ships seeded from the Geffen Hall drawing — 37 devices, 23 of them carrying
+measured dimensions, weights and rack heights from the rack layout. Add to it
+whenever a schematic needs a device it does not cover; that is the moment a
+model would otherwise guess.
 
 CC Tools falls back to ConnectCAD's own database of 2,734 devices for anything
 not in the file. Stock manufacturer symbol libraries are deliberately not

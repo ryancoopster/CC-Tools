@@ -102,7 +102,7 @@ This works and has been used on real drawings, but it is early software that edi
 CC Tools can draw a schematic that Claude designs — no API key, developer
 account or terminal needed:
 
-1. Drag [`JOB-SPEC.md`](JOB-SPEC.md) and [`DEVICES.md`](DEVICES.md) into a Claude conversation.
+1. Drag [`JOB-SPEC.md`](JOB-SPEC.md) into a Claude conversation — one file, spec and device list.
 2. Describe what you want.
 3. Download the `.json` file Claude gives you.
 4. **CC Tools ▸ Draw schematic job**, and pick that file.

@@ -1,8 +1,15 @@
-# ConnectCAD schematic job — spec
+# ConnectCAD schematic job — spec and device list
 
-**Give this file to Claude.** It tells Claude how to write a job file that the
-CC Tools plug-in can draw in Vectorworks. Then describe the schematic you want,
-and Claude replies with a `.json` file to download.
+**Give Claude this one file.** It contains everything needed: how to write a
+job file that the CC Tools plug-in can draw in Vectorworks, and the curated
+list of devices with their real connectors and physical properties.
+
+Then describe the schematic you want, and Claude replies with a `.json` file
+to download.
+
+**Copy this same file to `~/Documents/CC Tools/devices.md`.** The plug-in reads
+the device list out of it and ignores everything else, so both sides work from
+one source and cannot disagree about a socket name.
 
 ---
 
@@ -74,14 +81,15 @@ because the rules below determine those.
 
 **Never invent connectors.** In order of preference:
 
-1. **`DEVICES.md`, the curated device list** — if the user attached it, and the
-   device is in it, use exactly the socket names it gives. The plug-in reads
-   the same file, so your circuits and its sockets will match by construction.
-   This is the best case and the one to aim for.
+1. **The device list at the end of this file** — if the device is in it, use
+   exactly the socket names it gives. The plug-in reads the same list, so your
+   circuits and its sockets will match by construction. This is the best case
+   and the one to aim for.
 2. **Look the device up properly** if it is not in that file — the
    manufacturer's real connector set — and say clearly in your reply that you
-   did, and what you found. Suggest the user add it to `DEVICES.md` so the next
-   schematic comes out the same. Include the whole entry for them to paste:
+   did, and what you found. Suggest the user add it to the device list so the
+   next schematic comes out the same. Include the whole entry for them to
+   paste:
    the socket table AND the physical properties, which are
 
    ```
@@ -224,3 +232,681 @@ Check each of these, because each one produces a silently wrong drawing:
 - [ ] Every circuit has a `cable` name.
 - [ ] The JSON parses.
 - [ ] It is offered as a **downloadable file**, not a code block.
+
+---
+
+## The device list
+
+Seeded from the Geffen Hall drawing. Whitespace has been normalised — a few
+socket names there carried double or trailing spaces, which are invisible on
+screen and break the name match.
+
+**Physical properties are filled in only where ConnectCAD's own database had
+them — 2 of the 28.** The rest are left blank on purpose rather than filled
+with plausible numbers. Fill them in as you look each device up; that is what
+this file is for.
+
+### Align Array | AL3
+
+- Width:
+- Height:
+- Depth:
+- Weight:
+- Power:
+- Rack mounted:
+- Rack U:
+
+| Socket | Type | Signal | Connector | Side |
+|---|---|---|---|---|
+| LAN_IN | IN | LAN | EC-6A | L |
+
+### Custom | Connector Panel
+
+- Width: 18.92 in
+- Height: 7 in
+- Depth: 3.15 in
+- Rack mounted: yes
+- Rack U: 4
+
+| Socket | Type | Signal | Connector | Side |
+|---|---|---|---|---|
+| 1-49 | IN | LINE | --- | L |
+| 1-49 | OUT | LINE | XLR3F | R |
+
+### Focusrite | REDNET-D16R AES
+
+- Width: 19.06 in
+- Height: 1.75 in
+- Depth: 10.35 in
+- Weight: 3.84 kg
+- Power: 30 W
+- Rack mounted: yes
+
+| Socket | Type | Signal | Connector | Side |
+|---|---|---|---|---|
+| DANTE 1 | IO | LAN | RJ45 | R |
+| DANTE 2 | IO | LAN | RJ45 | R |
+| WD_CLK _N | IN | WC | BNC | L |
+| WD_CLK_OUT | OUT | WC | BNC | R |
+| AES_IN | IN | AES | XLR3M | L |
+| AES_OUT | OUT | AES | XLR3F | R |
+| SPDIF_IN | IN | AES | RCA | L |
+| SPDIF_OUT | OUT | AES | RCA | R |
+| AES_IN&OUT 1-8 | IO | AES | DB25M | R |
+| AES_IN&OUT 9-16 | IO | AES | DB25M | R |
+
+### Luminex | 10I 10G 2X SFP 1G x8
+
+- Width: 9.5 in
+- Height: 1.75 in
+- Depth: 13 in
+- Weight: 3.4 kg
+- Power: 30 W
+- Rack mounted: yes
+- Rack U: 1
+
+| Socket | Type | Signal | Connector | Side |
+|---|---|---|---|---|
+| LAN 1 | IO | LAN | RJ45 | R |
+| LAN 2 | IO | LAN | RJ45 | R |
+| LAN 3 | IO | LAN | RJ45 | R |
+| LAN 4 | IO | LAN | RJ45 | R |
+| LAN 5 | IO | LAN | RJ45 | R |
+| LAN 6 | IO | LAN | RJ45 | R |
+| LAN 7 | IO | LAN | RJ45 | R |
+| LAN 8 | IO | LAN | RJ45 | R |
+| SFP 9 | IO | OPT | LC | R |
+| SMP 10 | IO | LAN | DUO-SMF | R |
+
+### Luminex | 10T-IP
+
+- Width:
+- Height:
+- Depth:
+- Weight:
+- Power:
+- Rack mounted:
+- Rack U:
+
+| Socket | Type | Signal | Connector | Side |
+|---|---|---|---|---|
+| LAN 8 | IO | LAN | EC-6A | R |
+| LAN 6 | IO | LAN | EC-6A | R |
+| LAN 5 | IO | LAN | EC-6A | R |
+| LAN 4 | IO | LAN | EC-6A | R |
+| LAN 3 | IO | LAN | EC-6A | R |
+| LAN 2 | IO | LAN | EC-6A | R |
+| LAN 7 | IO | LAN | EC-6A | R |
+| LAN 1 | IO | LAN | EC-6A | R |
+
+### Luminex | 16I 10G
+
+- Width: 9.49 in
+- Height: 1.76 in
+- Depth: 11.67 in
+- Weight: 2.4 kg
+- Power: 25 W
+- Rack mounted: yes
+
+| Socket | Type | Signal | Connector | Side |
+|---|---|---|---|---|
+| LAN 1 | IO | LAN | RJ45 | R |
+| LAN 2 | IO | LAN | RJ45 | R |
+| LAN 3 | IO | LAN | RJ45 | R |
+| LAN 4 | IO | LAN | RJ45 | R |
+| LAN 5 | IO | LAN | RJ45 | R |
+| LAN 6 | IO | LAN | RJ45 | R |
+| LAN 7 | IO | LAN | RJ45 | R |
+| LAN 8 | IO | LAN | RJ45 | R |
+| LAN 9 | IO | LAN | RJ45 | R |
+| LAN 10 | IO | LAN | RJ45 | R |
+| LAN 11 | IO | LAN | RJ45 | R |
+| LAN 12 | IO | LAN | RJ45 | R |
+| SFP 13 | IO | OPT | DUO-SMF | R |
+| SFP 14 | IO | OPT | DUO-SMF | R |
+| SFP 15 | IO | OPT | DUO-SMF | R |
+| SFP 16 | IO | OPT | DUO-SMF | R |
+
+### Luminex | 30i 10G POE
+
+- Width: 18.98 in
+- Height: 1.75 in
+- Depth: 12.2 in
+- Rack mounted: yes
+- Rack U: 1
+
+| Socket | Type | Signal | Connector | Side |
+|---|---|---|---|---|
+| LAN 1 | IO | LAN | RJ45 | R |
+| LAN 2 | IO | LAN | RJ45 | R |
+| LAN 3 | IO | LAN | RJ45 | R |
+| LAN 4 | IO | LAN | RJ45 | R |
+| LAN 5 | IO | LAN | RJ45 | R |
+| LAN 6 | IO | LAN | RJ45 | R |
+| LAN 7 | IO | LAN | RJ45 | R |
+| LAN 8 | IO | LAN | RJ45 | R |
+| LAN 9 | IO | LAN | RJ45 | R |
+| LAN 10 | IO | LAN | RJ45 | R |
+| LAN 11 | IO | LAN | RJ45 | R |
+| LAN 12 | IO | LAN | RJ45 | R |
+| LAN 13 | IO | LAN | RJ45 | R |
+| LAN 14 | IO | LAN | RJ45 | R |
+| LAN 15 | IO | LAN | RJ45 | R |
+| LAN 16 | IO | LAN | RJ45 | R |
+| LAN 17 | IO | LAN | RJ45 | R |
+| LAN 18 | IO | LAN | RJ45 | R |
+| LAN 19 | IO | LAN | RJ45 | R |
+| LAN 20 | IO | LAN | RJ45 | R |
+| LAN 21 | IO | LAN | RJ45 | R |
+| LAN 22 | IO | LAN | RJ45 | R |
+| LAN 23 | IO | LAN | RJ45 | R |
+| LAN 24 | IO | LAN | RJ45 | R |
+| SFP 25 | IO | OPT | LC | R |
+| SFP 26 | IO | LAN | SFP | R |
+| SFP 27 | IO | LAN | SFP | R |
+| SFP 28 | IO | LAN | SFP | R |
+| SFP 29 | IO | LAN | SFP | R |
+| SFP 30 | IO | LAN | SFP | R |
+
+### Meyer Sound | 2100-LFC
+
+- Width:
+- Height:
+- Depth:
+- Weight:
+- Power:
+- Rack mounted:
+- Rack U:
+
+| Socket | Type | Signal | Connector | Side |
+|---|---|---|---|---|
+| LINE_IN | IN | LINE | XLR3M | L |
+| LINE_THRU | OUT | LINE | XLR3F | R |
+| LAN | IN | LAN | EC-6A | L |
+
+### Meyer Sound | Galaxy 408
+
+- Width: 19 in
+- Height: 1.75 in
+- Depth: 16.14 in
+- Weight: 6 kg
+- Power: 26.33 W
+- Rack mounted: yes
+- Rack U: 1
+
+| Socket | Type | Signal | Connector | Side |
+|---|---|---|---|---|
+| AES_IN A/B | IN | LINE | XLR3M | L |
+| LINE_IN B | IN | LINE | XLR3M | L |
+| AES_IN C/D | IN | LINE | XLR3M | L |
+| LINE_IN D | IN | LINE | XLR3M | L |
+| L Sub Top OUT 1 | OUT | LINE | XLR3F | R |
+| L Sub Middle OUT 2 | OUT | LINE | XLR3F | R |
+| L SUb Bottom OUT 3 | OUT | LINE | XLR3F | R |
+| R Sub Top OUT 4 | OUT | LINE | XLR3F | R |
+| R Sub Middle OUT 5 | OUT | LINE | XLR3F | R |
+| R Sun Bottom OUT 6 | OUT | LINE | XLR3F | R |
+| LINE_ OUT 7 | OUT | LINE | XLR3F | R |
+| LINE_ OUT 8 | OUT | LINE | XLR3F | R |
+| LAN 1 | IO | LAN | RJ45 | R |
+| LAN 2 | IO | LAN | RJ45 | R |
+
+### Meyer Sound | Galaxy 816
+
+- Width: 19 in
+- Height: 3.47 in
+- Depth: 16.14 in
+- Weight: 7.6 kg
+- Rack mounted: yes
+
+| Socket | Type | Signal | Connector | Side |
+|---|---|---|---|---|
+| AES_IN A/B | IN | AES | XLR3M | L |
+| LINE_IN B | IN | LINE | XLR3M | L |
+| AES_IN C/D | IN | AES | XLR3M | L |
+| LINE_IN D | IN | LINE | XLR3M | L |
+| AES_IN E/F | IN | AES | XLR3M | L |
+| LINE_IN F | IN | LINE | XLR3M | L |
+| AES_IN G/H | IN | AES | XLR3M | L |
+| LINE_IN H | IN | LINE | XLR3M | L |
+| LINE_OUT 1 | OUT | LINE | XLR3F | R |
+| LINE_OUT 2 | OUT | LINE | XLR3F | R |
+| LINE_OUT 3 | OUT | LINE | XLR3F | R |
+| LINE_OUT 4 | OUT | LINE | XLR3F | R |
+| LINE_OUT 5 | OUT | LINE | XLR3F | R |
+| LINE_OUT 6 | OUT | LINE | XLR3F | R |
+| LINE_OUT 7 | OUT | LINE | XLR3F | R |
+| LINE_OUT 8 | OUT | LINE | XLR3F | R |
+| LINE_OUT 9 | OUT | LINE | XLR3F | R |
+| LINE_OUT 10 | OUT | LINE | XLR3F | R |
+| LINE_OUT 11 | OUT | LINE | XLR3F | R |
+| LINE_OUT 12 | OUT | LINE | XLR3F | R |
+| LINE_OUT 13 | OUT | LINE | XLR3F | R |
+| LINE_OUT 14 | OUT | LINE | XLR3F | R |
+| LINE_OUT 15 | OUT | LINE | XLR3F | R |
+| LINE_OUT 16 | OUT | LINE | XLR3F | R |
+| LAN 1 | IO | LAN | RJ45 | R |
+| LAN 2 | IO | LAN | RJ45 | R |
+
+### Meyer Sound | MPS-488X
+
+- Width: 18.92 in
+- Height: 1.76 in
+- Depth: 15.31 in
+- Weight: 6.9 kg
+- Power: 1350 W
+- Rack mounted: no
+
+| Socket | Type | Signal | Connector | Side |
+|---|---|---|---|---|
+| LINE_IN 1 | IN | LINE | XLR3M | L |
+| LINE_IN 2 | IN | LINE | XLR3M | L |
+| LINE_IN 3 | IN | LINE | XLR3M | L |
+| LINE_IN 4 | IN | LINE | XLR3M | L |
+| LINE_IN 5 | IN | LINE | XLR3M | L |
+| LINE_IN 6 | IN | LINE | XLR3M | L |
+| LINE_IN 7 | IN | LINE | XLR3M | L |
+| LINE_IN 8 | IN | LINE | XLR3M | L |
+| MIDC_OUT 1 | OUT | MIDC | TBLK-5 | R |
+| MIDC_OUT 2 | OUT | MIDC | TBLK-5 | R |
+| MIDC_OUT 3 | OUT | MIDC | TBLK-5 | R |
+| MIDC_OUT 4 | OUT | MIDC | TBLK-5 | R |
+| MIDC_OUT 5 | OUT | MIDC | TBLK-5 | R |
+| MIDC_OUT 6 | OUT | MIDC | TBLK-5 | R |
+| MIDC_OUT 7 | OUT | MIDC | TBLK-5 | R |
+| MIDC_OUT 8 | OUT | MIDC | TBLK-5 | R |
+| LAN | IO | LAN | RJ45 | R |
+
+### Meyer Sound | TIGRA-L
+
+- Width:
+- Height:
+- Depth:
+- Weight:
+- Power:
+- Rack mounted:
+- Rack U:
+
+| Socket | Type | Signal | Connector | Side |
+|---|---|---|---|---|
+| LAN_IN 1 | IN | LAN | EC-6A | L |
+| LAN_IN 2 | IN | LAN | EC-6A | L |
+| LINE_IN | IN | LINE | XLR3M | L |
+| LINE_THRU | OUT | LINE | XLR3F | R |
+
+### Meyer Sound | TIGRA-W
+
+- Width:
+- Height:
+- Depth:
+- Weight:
+- Power:
+- Rack mounted:
+- Rack U:
+
+| Socket | Type | Signal | Connector | Side |
+|---|---|---|---|---|
+| Power In | IN | PWR | powerCON TRUE 1 F | L |
+| Power Thru | OUT | PWR | powerCon TRUE1 M | R |
+
+### Meyer Sound | ULTRA-X22
+
+- Width:
+- Height:
+- Depth:
+- Weight:
+- Power:
+- Rack mounted:
+- Rack U:
+
+| Socket | Type | Signal | Connector | Side |
+|---|---|---|---|---|
+| LINE_IN | IN | LINE | XLR3M | L |
+| LINE_THRU | OUT | LINE | XLR3M | R |
+
+### Meyer Sound | ULTRA-X40
+
+- Width:
+- Height:
+- Depth:
+- Weight:
+- Power:
+- Rack mounted:
+- Rack U:
+
+| Socket | Type | Signal | Connector | Side |
+|---|---|---|---|---|
+| LINE_IN | IN | LINE | XLR3M | L |
+| LINE_THRU | OUT | LINE | XLR3M | R |
+
+### Meyer Sound | ULTRA-X42
+
+- Width:
+- Height:
+- Depth:
+- Weight:
+- Power:
+- Rack mounted:
+- Rack U:
+
+| Socket | Type | Signal | Connector | Side |
+|---|---|---|---|---|
+| LINE_IN | IN | LINE | XLR3M | L |
+| LINE_THRU | OUT | LINE | XLR3M | R |
+
+### Meyer Sound | UP-4slim
+
+- Width:
+- Height:
+- Depth:
+- Weight:
+- Power:
+- Rack mounted:
+- Rack U:
+
+| Socket | Type | Signal | Connector | Side |
+|---|---|---|---|---|
+| MIDC_IN | IN | MIDC | TBLK-5 | L |
+
+### Middle Atlantic | EB1
+
+- Width: 18.92 in
+- Height: 1.75 in
+- Depth: 0.12 in
+- Rack mounted: yes
+- Rack U: 1
+
+| Socket | Type | Signal | Connector | Side |
+|---|---|---|---|---|
+| ? | IO | MILAN PRI | EC-6A | R |
+| ? | IO | MILAN SEC | EC-6A | R |
+| ? | IO | CTL | EC-6A | R |
+| ? | IO | MILAN PRI | EC-6A | R |
+| ? | IO | MILAN SEC | EC-6A | R |
+
+### Middle Atlantic | UPS-S1000R
+
+- Width: 19.06 in
+- Height: 1.75 in
+- Depth: 15.31 in
+- Weight: 16.3 kg
+- Rack mounted: yes
+- Rack U: 1
+
+| Socket | Type | Signal | Connector | Side |
+|---|---|---|---|---|
+| PWR_IN | IN | PWR | NEMA 5-15P | L |
+| PWR_OUT 1 | OUT | PWR | NEMA 5-15P | R |
+| PWR_OUT 2 | OUT | PWR | NEMA 5-15P | R |
+| PWR_OUT 3 | OUT | PWR | NEMA 5-15P | R |
+| PWR_OUT 4 | OUT | PWR | NEMA 5-15P | R |
+| PWR_OUT 5 | OUT | PWR | NEMA 5-15P | R |
+| PWR_OUT 6 | OUT | PWR | NEMA 5-15P | R |
+
+### Radial | POWER-2
+
+- Width: 18.92 in
+- Height: 1.75 in
+- Depth: 10.05 in
+- Rack mounted: yes
+- Rack U: 1
+
+| Socket | Type | Signal | Connector | Side |
+|---|---|---|---|---|
+| PWR_IN | IN | PWR | NEMA 5-15P | L |
+| PWR_OUT 1 | OUT | PWR | NEMA 5-15R | R |
+| PWR_OUT 2 | OUT | PWR | NEMA 5-15R | R |
+| PWR_OUT 3 | OUT | PWR | NEMA 5-15R | R |
+| PWR_OUT 4 | OUT | PWR | NEMA 5-15R | R |
+| PWR_OUT 5 | OUT | PWR | NEMA 5-15R | R |
+| PWR_OUT 6 | OUT | PWR | NEMA 5-15R | R |
+| PWR_OUT 7 | OUT | PWR | NEMA 5-15R | R |
+| PWR_OUT 8 | OUT | PWR | NEMA 5-15R | R |
+| PWR_OUT Front | OUT | PWR | NEMA 5-15R | R |
+
+### SAI | DB25 to AES XLR B/O
+
+- Width:
+- Height:
+- Depth:
+- Weight:
+- Power:
+- Rack mounted:
+- Rack U:
+
+| Socket | Type | Signal | Connector | Side |
+|---|---|---|---|---|
+| AES_I/O | IN | AES | Built In | L |
+| AES_IN 1-2 | IN | AES | Built In | L |
+| AES_IN 1-2 | IN | AES | Built In | L |
+| AES_IN 3-4 | IN | AES | Built In | L |
+| AES_IN 3-4 | IN | AES | Built In | L |
+| AES_OUT 1-2 | OUT | AES | Built In | R |
+| AES_OUT 3-4 | OUT | AES | Built In | R |
+| AES_OUT 5-6 | OUT | AES | Built In | R |
+| AES_OUT 7-8 | OUT | AES | Built In | R |
+
+### SAI | Powercon "Y"
+
+- Width:
+- Height:
+- Depth:
+- Weight:
+- Power:
+- Rack mounted:
+- Rack U:
+
+| Socket | Type | Signal | Connector | Side |
+|---|---|---|---|---|
+| ? | IN | PWR | pCON-W | L |
+| ? | OUT | PWR | pCON-B | R |
+| ? | OUT | PWR | pCON-B | R |
+
+### Ubiquiti | Cloud Gateway Ultra
+
+- Width:
+- Height:
+- Depth:
+- Weight:
+- Power:
+- Rack mounted:
+- Rack U:
+
+| Socket | Type | Signal | Connector | Side |
+|---|---|---|---|---|
+| WAN | IO | LAN | RJ45 | R |
+| LAN 1 | IO | LAN | RJ45 | R |
+| LAN 2 | IO | LAN | RJ45 | R |
+| LAN 3 | IO | LAN | RJ45 | R |
+| LAN 4 | IO | LAN | RJ45 | R |
+
+### Ubiquiti | U6 Mesh
+
+- Width:
+- Height:
+- Depth:
+- Weight:
+- Power:
+- Rack mounted:
+- Rack U:
+
+| Socket | Type | Signal | Connector | Side |
+|---|---|---|---|---|
+| LAN_IN | IO | LAN | RJ45 | R |
+
+### theatrixx | 5-L21-30 distro
+
+- Width: 18.92 in
+- Height: 21 in
+- Depth: 22 in
+- Rack mounted: yes
+- Rack U: 12
+
+| Socket | Type | Signal | Connector | Side |
+|---|---|---|---|---|
+| L21-30_IN 1 | IN | PWR | L21/30 F | L |
+| L21-30_IN 2 | IN | PWR | L21/30 F | L |
+| L21-30_IN 3 | IN | PWR | L21/30 F | L |
+| L21-30_IN 4 | IN | PWR | L21/30 F | L |
+| L21-30_IN 5 | IN | PWR | L21/30 F | L |
+| 20A 208v_OUT 1 | OUT | PWR | powerCON TRUE 1 F | R |
+| 20A 208v_OUT 2 | OUT | PWR | powerCON TRUE 1 F | R |
+| 20A 208v_OUT 3 | OUT | PWR | powerCON TRUE 1 F | R |
+| 20A 208v_OUT 4 | OUT | PWR | powerCON TRUE 1 F | R |
+| 20A 208v_OUT 5 | OUT | PWR | powerCON TRUE 1 F | R |
+| 20A 208v_OUT 6 | OUT | PWR | powerCON TRUE 1 F | R |
+| 20A 208v_OUT 7 | OUT | PWR | powerCON TRUE 1 F | R |
+| 20A 208v_OUT 9 | OUT | PWR | powerCON TRUE 1 F | R |
+| 20A 208v_OUT 10 | OUT | PWR | powerCON TRUE 1 F | R |
+| 20A 208v_OUT 11 | OUT | PWR | powerCON TRUE 1 F | R |
+| 20A 208v_OUT 12 | OUT | PWR | powerCON TRUE 1 F | R |
+| 20A 120v_OUT 13 | OUT | PWR | pCON grey | R |
+| 20A 120v_OUT 14 | OUT | PWR | pCON grey | R |
+| 20A 120v_OUT 15 | OUT | PWR | pCON grey | R |
+| 20A 208v_OUT 8 | OUT | PWR | powerCON TRUE 1 F | R |
+| 20A 120v_OUT 16 | OUT | PWR | pCON grey | R |
+| 20A 120v_OUT 17 | OUT | PWR | pCON grey | R |
+| 20A 120v_OUT 18 | OUT | PWR | pCON grey | R |
+
+### theatrixx | DGH 21-30 breakout
+
+- Width:
+- Height:
+- Depth:
+- Weight:
+- Power:
+- Rack mounted:
+- Rack U:
+
+| Socket | Type | Signal | Connector | Side |
+|---|---|---|---|---|
+| L21-30_IN | IN | PWR | L21/30 F | L |
+| 20A 208v_OUT 1 | OUT | PWR | powerCon TRUE1 M | R |
+| 20A 208v_OUT 2 | OUT | PWR | powerCon TRUE1 M | R |
+| 20A 120v_OUT 1 | OUT | PWR | pCON grey | R |
+| 20A 120v_OUT 2 | OUT | PWR | NEMA 5-20R | R |
+
+### theatrixx | L21-30 PD
+
+- Width: 18.92 in
+- Height: 3.5 in
+- Depth: 9.26 in
+- Rack mounted: yes
+- Rack U: 2
+
+| Socket | Type | Signal | Connector | Side |
+|---|---|---|---|---|
+| L21-30_IN | IN | PWR | L21/30 F | L |
+| 20A 120v_OUT 1A | OUT | PWR | NEMA L5-20P | R |
+| 20A 120v_OUT 1B | OUT | PWR | NEMA L5-20P | R |
+| 20A 120v_OUT 2A | OUT | PWR | NEMA L5-20P | R |
+| 20A 120v_OUT 2B | OUT | PWR | NEMA L5-20P | R |
+| 20A 120v_OUT 3A | OUT | PWR | NEMA L5-20P | R |
+| 20A 120v_OUT 3B | OUT | PWR | NEMA L5-20P | R |
+| 20A 120v_OUT 4A | OUT | PWR | NEMA L5-20P | R |
+| 20A 120v_OUT 4B | OUT | PWR | NEMA L5-20P | R |
+| 20A 120v_OUT 5A | OUT | PWR | NEMA L5-20P | R |
+| 20A 120v_OUT 5B | OUT | PWR | NEMA L5-20P | R |
+| 20A 120v_OUT 6A | OUT | PWR | NEMA L5-20P | R |
+| 20A 120v_OUT 6B | OUT | PWR | NEMA L5-20P | R |
+
+### theatrixx | PB-11
+
+- Width: 19 in
+- Height: 1.75 in
+- Depth: 9 in
+- Rack mounted: yes
+- Rack U: 1
+
+| Socket | Type | Signal | Connector | Side |
+|---|---|---|---|---|
+| PWR_IN | IN | PWR | pCON blue | L |
+| PWR_OUT 1 | OUT | PWR | pCON | R |
+| PWR_OUT 2 | OUT | PWR | pCON | R |
+| PWR_OUT 1 | OUT | PWR | NEMA 5-15P | R |
+| PWR_OUT 2 | OUT | PWR | NEMA 5-15P | R |
+| PWR_OUT 3 | OUT | PWR | NEMA 5-15P | R |
+| PWR_OUT 4 | OUT | PWR | NEMA 5-15P | R |
+| PWR_OUT 5 | OUT | PWR | NEMA 5-15P | R |
+| PWR_OUT 6 | OUT | PWR | NEMA 5-15P | R |
+| PWR_OUT 7 | OUT | PWR | NEMA 5-15P | R |
+| PWR_OUT 8 | OUT | PWR | NEMA 5-15P | R |
+
+## Known from the rack layout only
+
+Physical properties measured from the drawing. **No socket lists
+yet** — add them as these devices come up in a schematic.
+
+### Ampetronic | C-5 Loop Driver
+
+- Width: 18.92 in
+- Height: 1.75 in
+- Depth: 7.48 in
+- Rack mounted: yes
+- Rack U: 1
+
+### Audio Accessories | WEP_961_SH
+
+- Width: 18.92 in
+- Height: 1.75 in
+- Depth: 4 in
+- Rack mounted: yes
+- Rack U: 1
+
+### Custom Panel | Custom Patch Panel
+
+- Width: 18.92 in
+- Height: 21 in
+- Depth: 4 in
+- Rack mounted: yes
+- Rack U: 12
+
+### Middle Atlantic | BR1
+
+- Width: 18.92 in
+- Height: 1.75 in
+- Depth: 0.99 in
+- Rack mounted: yes
+- Rack U: 1
+
+### Middle Atlantic | UPS-S1500R
+
+- Width: 19.01 in
+- Height: 3.51 in
+- Depth: 16.5 in
+- Weight: 24.5 kg
+- Rack mounted: yes
+
+### Yamaha | DSP-RX-EX
+
+- Width: 18.92 in
+- Height: 8.75 in
+- Depth: 19.3 in
+- Rack mounted: yes
+- Rack U: 5
+
+### Yamaha | RPIO 222
+
+- Width: 18.92 in
+- Height: 8.75 in
+- Depth: 19.3 in
+- Rack mounted: yes
+- Rack U: 5
+
+### Yamaha | Rio1608
+
+- Width: 18.92 in
+- Height: 5.25 in
+- Depth: 12 in
+- Weight: 9.6 kg
+- Rack mounted: yes
+
+### Yamaha | TF-Rack
+
+- Width: 18.92 in
+- Height: 5.25 in
+- Depth: 16.12 in
+- Weight: 9.2 kg
+- Power: 85 W
+- Rack mounted: yes
+- Rack U: 3
