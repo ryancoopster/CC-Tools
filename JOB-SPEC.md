@@ -7,9 +7,13 @@ list of devices with their real connectors and physical properties.
 Then describe the schematic you want, and Claude replies with a `.json` file
 to download.
 
-**Copy this same file to `~/Documents/CC Tools/devices.md`.** The plug-in reads
-the device list out of it and ignores everything else, so both sides work from
-one source and cannot disagree about a socket name.
+That is the whole flow: **this file goes to Claude, the `.json` Claude gives
+back goes to the plug-in.**
+
+*(Optional: the same file can also be dropped in `~/Documents/CC Tools/`. The
+plug-in reads the device list out of it and ignores the rest, which only
+matters for a job that names a device without listing its sockets. Nothing
+breaks without it.)*
 
 ---
 

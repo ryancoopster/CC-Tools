@@ -24,13 +24,15 @@ Undo works normally if the result isn't what you wanted.
 ## The curated device list
 
 The device list lives at the end of [`JOB-SPEC.md`](JOB-SPEC.md) — the same
-file you hand Claude. **Copy it to `~/Documents/CC Tools/devices.md`** as well;
-that is where the plug-in reads it from. (It will also accept the file saved
-under its own name, `JOB-SPEC.md`.)
+file you hand Claude. Claude writes circuits against the socket names in it,
+and puts those sockets in the job, so the plug-in builds exactly what Claude
+designed. That is the normal path and it needs no setup.
 
-Both sides then work from one source: Claude writes circuits against the socket
-names in it, and the plug-in builds those exact sockets, ignoring the spec
-prose around them. They cannot disagree, which is the whole point.
+**Optionally**, drop a copy of the file in `~/Documents/CC Tools/` (as
+`devices.md` or under its own name). The plug-in reads the device list out of
+it and ignores the spec prose. This only matters for a job that names a device
+*without* listing its sockets — then your curated entry is used instead of
+ConnectCAD's shipped database. Nothing breaks if you skip it.
 
 It ships seeded from the Geffen Hall drawing — 37 devices, 23 of them carrying
 measured dimensions, weights and rack heights from the rack layout. Add to it
