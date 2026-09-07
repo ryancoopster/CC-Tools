@@ -3448,14 +3448,66 @@ def socket_prototype(symbol):
     return None
 
 
+# The Device record carries the physical properties itself -- it is not only
+# EquipItem that has them. Confirmed from a real drawing's field dump:
+#   width / height / depth   in DOCUMENT units, so inches must be scaled
+#   weight / power           bare numbers, kilograms and watts
+#   width_R                  'full-rack' | 'half-rack' | 'non-rack'
+#   heightU                  size in rack units
+# A generated device left these at zero reports no weight and no power in any
+# schedule taken off the drawing, which is worse than useless -- it is a
+# schedule that looks complete and is wrong.
+DEVICE_PHYSICAL_FIELDS = (
+    ('width', 'width', 'length'),
+    ('height', 'height', 'length'),
+    ('depth', 'depth', 'length'),
+    ('weight', 'weight', 'number'),
+    ('power', 'power', 'number'),
+)
+
+
+def apply_physical_properties(handle, entry, upi, log=None):
+    """Write a curated device's physical properties onto the Device.
+
+    Lengths are stored in the document's units, so the inches the curated list
+    holds are scaled by units-per-inch. Anything the list does not know is left
+    alone rather than written as zero: a blank field says "not recorded", a
+    zero says "weighs nothing"."""
+    if not entry:
+        return []
+    written = []
+    for prop, field, kind in DEVICE_PHYSICAL_FIELDS:
+        value = golden_number(entry, prop)
+        if value is None:
+            continue
+        if kind == 'length':
+            value = value * (upi or 1.0)
+        if write_field(handle, field, '{:g}'.format(value)):
+            written.append(field)
+
+    racked = golden_is_rack_mounted(entry)
+    if racked is not None:
+        if write_field(handle, 'width_R',
+                       'full-rack' if racked else 'non-rack'):
+            written.append('width_R')
+    rack_u = golden_number(entry, 'rack u')
+    if rack_u is not None and write_field(handle, 'heightU',
+                                          '{:g}'.format(rack_u)):
+        written.append('heightU')
+
+    if written and log is not None:
+        log.append('          physical: {}'.format(', '.join(written)))
+    return written
+
+
 def build_device(name, tag, make, model, x, y, socket_specs, log,
-                 upi=1.0, scale=1.0, grid=None):
+                 upi=1.0, scale=1.0, grid=None, description=''):
     """Build a device by hand, sockets and all. Returns (handle, sockets_ok).
 
     Used when no device symbol matches. Socket specs are
     (symbol, name, type, side) with optional signal and connector appended."""
     handle, ok = probe_make_device(name, x, y, 2.0, 1.0, socket_specs, log,
-                                   upi, scale, grid)
+                                   upi, scale, grid, make, model)
     if handle:
         if tag and tag != name:
             write_field(handle, resolve_field(handle, DEVICE_TAG_FIELDS) or 'tag',
@@ -3464,6 +3516,15 @@ def build_device(name, tag, make, model, x, y, socket_specs, log,
             write_field(handle, 'make', make)
         if model:
             write_field(handle, 'model', model)
+        # The drawing's own convention is Make_Model ('Meyer Sound_2100-LFC').
+        # Without it the device label falls back to a generic word, which is
+        # what every block in the first real job came out reading.
+        if not description and (make or model):
+            description = '{}_{}'.format(make, model).strip('_')
+        if description:
+            write_field(handle, 'description', description)
+        apply_physical_properties(handle, find_golden_device(make, model),
+                                  upi, log)
         try:
             vs.ResetObject(handle)
         except Exception:
@@ -3472,7 +3533,7 @@ def build_device(name, tag, make, model, x, y, socket_specs, log,
 
 
 def probe_make_device(name, x, y, width, height, socket_specs, log,
-                      upi=1.0, scale=1.0, grid=None):
+                      upi=1.0, scale=1.0, grid=None, make='', model=''):
     """Create one device with sockets.
 
     Returns (device handle or None, every socket added). The second value
@@ -3526,10 +3587,15 @@ def probe_make_device(name, x, y, width, height, socket_specs, log,
     except Exception as err:
         log.append('  WARN  source rectangle left behind: {}'.format(err))
 
+    # make/model are the CALLER'S. This used to hard-code 'CC Tools' / 'Probe'
+    # -- the creation probe's own identity -- into every device a job built,
+    # and a job that omitted either left the placeholder in the drawing.
     for field, value in (('name', name), ('tag', name),
-                         ('make', 'CC Tools'), ('model', 'Probe')):
-        write_field(device, field, value)
-    log.append('  ok    name/make/model set')
+                         ('make', make), ('model', model)):
+        if value:
+            write_field(device, field, value)
+    log.append('  ok    name set{}'.format(
+        ', make/model {} / {}'.format(make, model) if (make or model) else ''))
 
     group_getter = getattr(vs, 'GetCustomObjectProfileGroup', None)
     if group_getter is None:
@@ -4181,7 +4247,8 @@ def tool_creation_probe():
         PROBE_PREFIX + ' A', 0, 0, 2.0, 1.0,
         [('skt_R', 'OUT 1', 'OUT', 1),
          ('skt_R', 'OUT 2', 'OUT', 1),
-         ('skt_R', 'OUT 3', 'OUT', 1)], log, upi, scale, grid)
+         ('skt_R', 'OUT 3', 'OUT', 1)], log, upi, scale, grid,
+        'CC Tools', 'Probe')
     log.append('')
 
     log.append('2. Device with sockets (LONG name -- does the header outgrow '
@@ -4190,7 +4257,8 @@ def tool_creation_probe():
         PROBE_PREFIX + ' B WITH A MUCH LONGER NAME', 6.0, 0, 2.0, 1.0,
         [('skt_L', 'IN 1', 'IN', -1),
          ('skt_L', 'IN 2', 'IN', -1),
-         ('skt_L', 'IN 3', 'IN', -1)], log, upi, scale, grid)
+         ('skt_L', 'IN 3', 'IN', -1)], log, upi, scale, grid,
+        'CC Tools', 'Probe')
     log.append('')
 
     log.append('3. Wiring them with ConnectSelected')
@@ -5698,6 +5766,112 @@ def section_extent(devices, positions, upi, scale, gy, catalogue=None):
     return (top or 0.0), (bottom or 0.0)
 
 
+# ConnectCAD's signal vocabulary. A circuit carrying a signal the document does
+# not define is flagged by ConnectCAD's own error checking after it is drawn,
+# which is a bad way to find out.
+#
+# The shipped list is the floor, not the whole truth: a drawing can define its
+# own, and the Geffen job uses MILAN PRI, MILAN SEC and MIDC, none of which
+# ConnectCAD ships. So an unknown signal is reported as something to look at,
+# never treated as an error on its own.
+SIGNAL_TYPES_RELATIVE = os.path.join(
+    'Libraries', 'Defaults', 'ConnectCAD', 'ConnectCAD_Database',
+    'SignalTypes.txt')
+
+_signal_cache = set()
+
+
+def known_signals():
+    """Every signal ConnectCAD ships, plus any the user has added."""
+    if _signal_cache:
+        return _signal_cache
+    for base in ('/Applications/Vectorworks 2026',
+                 os.path.expanduser('~/Library/Application Support/'
+                                    'Vectorworks/2026')):
+        path = os.path.join(base, SIGNAL_TYPES_RELATIVE)
+        try:
+            with open(path, 'rb') as f:
+                raw = f.read().decode('utf-8-sig')
+        except Exception:
+            continue
+        # The application and user copies disagree on line endings.
+        raw = raw.replace('\r\n', '\n').replace('\r', '\n')
+        for index, line in enumerate(raw.split('\n')):
+            if index == 0 or not line.strip():
+                continue          # row 0 is the header
+            name = line.split('\t')[0].strip()
+            if name:
+                _signal_cache.add(name.upper())
+    return _signal_cache
+
+
+def unknown_signals(job):
+    """Signals in a job that ConnectCAD does not ship a definition for.
+
+    Returns an empty set when the signal list cannot be read at all, rather
+    than reporting every signal as unknown -- a missing file is not evidence
+    that a signal is wrong."""
+    defined = known_signals()
+    if not defined:
+        return set()
+    used = set()
+    for circuit in job.get('circuits') or []:
+        if isinstance(circuit, dict):
+            signal = (circuit.get('signal') or '').strip()
+            if signal:
+                used.add(signal)
+    for device in job.get('devices') or []:
+        for socket in (device.get('sockets') or []):
+            if isinstance(socket, dict):
+                signal = (socket.get('signal') or '').strip()
+                if signal:
+                    used.add(signal)
+    return set(s for s in used if s.upper() not in defined)
+
+
+def layer_context_quietly():
+    """The active layer's scale, units and grid, without writing to a log."""
+    return active_layer_context([])
+
+
+def find_overlaps(job, positions, upi, scale, gy, catalogue=None):
+    """Devices that would be drawn on top of one another. Returns [(a, b, by)].
+
+    This is the trap in align_to, and it is arithmetic rather than a mistake
+    anyone makes: sockets are one grid unit apart, but a device is at least
+    three tall. Fan a switch out to eight speakers, align each to the next
+    socket down, and put them all in one column, and consecutive speakers sit
+    a quarter inch apart while being three quarters of an inch tall. They
+    overlap by half an inch, every time.
+
+    A schematic like that draws without complaint and then wires almost
+    nothing, because ConnectCAD cannot route to a socket buried under another
+    device."""
+    boxes = []
+    for device in job['devices']:
+        if not isinstance(device, dict):
+            continue
+        ident = job_device_id(device)
+        if ident not in positions:
+            continue
+        x, y = positions[ident]
+        height = device_height(device, upi, scale, gy, catalogue)
+        boxes.append((ident, (device.get('section') or '').strip(), x,
+                      y, y - height))
+
+    clashes = []
+    for i in range(len(boxes)):
+        for j in range(i + 1, len(boxes)):
+            a_id, a_sec, ax, a_top, a_bot = boxes[i]
+            b_id, b_sec, bx, b_top, b_bot = boxes[j]
+            if a_sec != b_sec or abs(ax - bx) > 0.01:
+                continue
+            depth = min(a_top, b_top) - max(a_bot, b_bot)
+            if depth > 0.001:
+                clashes.append((a_id, b_id, depth))
+    return clashes
+
+
 def resolve_job_positions(job, gx, gy, upi=1.0, scale=1.0, prefs=None,
                           catalogue=None):
     """Where every device goes. Returns ({id: (x, y)}, notes).
@@ -5826,7 +6000,8 @@ def build_job_devices(job, log, upi, scale, grid):
                        'neither the curated list nor the device '
                        'database'.format(name[:30]))
         handle, ok = build_device(name, tag, make, model, x, y, specs, log,
-                                  upi, scale, grid)
+                                  upi, scale, grid,
+                                  device.get('description') or '')
         if handle:
             made[ident] = handle
             log.append('  built   {:<30} {} socket(s) from the {}{}'.format(
@@ -6086,6 +6261,44 @@ def tool_draw_job():
 
     devices = job['devices']
     circuits = job.get('circuits') or []
+
+    # Checked BEFORE the confirmation, so a job that cannot work is refused
+    # rather than drawn and then explained.
+    _layer, pre_scale, pre_upi, pre_grid = layer_context_quietly()
+    positions, _notes = resolve_job_positions(
+        job, pre_grid[0], pre_grid[1], pre_upi, pre_scale, load_prefs(),
+        device_symbol_catalogue())
+    clashes = find_overlaps(job, positions, pre_upi, pre_scale, pre_grid[1],
+                            device_symbol_catalogue())
+    if clashes:
+        listing = '\n'.join('   {} and {} overlap by {:.2f}"'.format(*c)
+                             for c in clashes[:8])
+        if len(clashes) > 8:
+            listing += '\n   ... and {} more'.format(len(clashes) - 8)
+        if vs.AlertQuestion(
+                '{} pair(s) of devices would be drawn on top of each '
+                'other.'.format(len(clashes)),
+                '{}\n\nConnectCAD cannot route to a socket buried under '
+                'another device, so most circuits will not wire. This usually '
+                'means several devices share a column while being aligned one '
+                'socket apart -- they need a column each.\n\nDraw it '
+                'anyway?'.format(listing),
+                1, 'Draw anyway', 'Cancel', '', '') != 1:
+            return 'stopped', '{} overlapping device pair(s)'.format(len(clashes))
+
+    unknown = unknown_signals(job)
+    if unknown:
+        if vs.AlertQuestion(
+                '{} signal(s) are not defined in ConnectCAD.'.format(len(unknown)),
+                '{}\n\nCircuits carrying a signal this document does not know '
+                'about will be flagged by ConnectCAD after they are drawn. '
+                'Either define them in ConnectCAD Settings first, or change '
+                'them in the job.\n\nDraw it anyway?'.format(
+                    '   ' + ', '.join(sorted(unknown)[:12])),
+                1, 'Draw anyway', 'Cancel', '', '') != 1:
+            return 'stopped', 'undefined signals: {}'.format(
+                ', '.join(sorted(unknown)[:6]))
+
     if vs.AlertQuestion(
             'Draw {} device(s) and {} circuit(s)?'.format(
                 len(devices), len(circuits)),

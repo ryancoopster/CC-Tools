@@ -136,8 +136,8 @@ which must exist in the device list.
 
 | Key | Meaning |
 |---|---|
-| `signal` | The circuit's own signal, e.g. `MILAN PRI`. **Not** the same as the sockets' signal: a real drawing joins two `LAN` sockets with a `MILAN PRI` circuit. Real values in use: `LINE`, `PWR`, `MILAN PRI`, `MILAN SEC`, `MIDC`, `AES`, `OPT`, `DANTE`, `LAN`. |
-| `cable` | A short human-readable name for the run, drawn along the middle of the line. Write one for every circuit — this is a design decision, and it is the label a person reads off the drawing. Keep it short enough to sit on a line. |
+| `signal` | The circuit's own signal, e.g. `MILAN PRI`. **Not** the same as the sockets' signal: a real drawing joins two `LAN` sockets with a `MILAN PRI` circuit. Use only signals ConnectCAD knows — `LINE`, `PWR`, `LAN`, `AES`, `DANTE`, `OPT` are standard, and `MILAN PRI`, `MILAN SEC`, `MIDC` are defined in this user's own library. Inventing one makes ConnectCAD flag every circuit carrying it. |
+| `cable` | A short human-readable name for the run, drawn along the middle of the line. **Ask the user whether they want cable names before writing any**, and if they do, write one for **every** circuit — a drawing where some lines are labelled and others are not looks like an oversight. |
 
 Do **not** set a wire number. ConnectCAD numbers wires itself, by signal type,
 and a second scheme fighting it makes a mess.
@@ -198,6 +198,27 @@ That says "put me at whatever height makes my socket line up with theirs". The
 plug-in computes the y using the same pitch it draws with, so the two cannot
 drift apart. Never work the offsets out yourself — you would have to know the
 drawing's grid size, and you don't.
+
+### One device fanning out to many needs a column each
+
+This is the trap, and it is arithmetic rather than judgement. Sockets are one
+grid unit apart. A device is at least **three** grid units tall. So if a switch
+feeds eight speakers and you align each to the next socket down **while leaving
+them all in one column**, consecutive speakers sit one unit apart while being
+three units tall — they overlap, every time, and ConnectCAD cannot route to a
+socket buried under another device.
+
+**Give each one its own column**, stepping right as you step down:
+
+```
+speaker 1  column 1   aligned to LAN 1
+speaker 2  column 2   aligned to LAN 2
+speaker 3  column 3   aligned to LAN 3
+```
+
+A daisy-chain already does this naturally — each device in the next column —
+which is why chains work and fan-outs do not. The plug-in now refuses a job
+whose devices would overlap, so getting this wrong costs a round trip.
 
 Alignment chains: if speaker 2 aligns to the switch, speaker 3 can align to
 speaker 2. Something in each chain must be positioned by `column`/`row` alone,
@@ -281,6 +302,10 @@ Check each of these, because each one produces a silently wrong drawing:
 - [ ] Every circuit has a `cable` name.
 - [ ] The JSON parses.
 - [ ] A preview was shown and every circuit line came out horizontal.
+- [ ] No two devices in the same section share a column unless they are far
+      enough apart not to overlap — a fan-out needs a column each.
+- [ ] Every signal is one ConnectCAD defines.
+- [ ] Cable names were asked about, and are either on every circuit or none.
 - [ ] It is offered as a **downloadable file**, not a code block.
 
 ---
