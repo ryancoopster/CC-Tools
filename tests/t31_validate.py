@@ -239,4 +239,46 @@ fy = pos['f'][1] - m.socket_drop(1, 1.0, 1.0, G)
 gy_ = pos['g'][1] - m.socket_drop(0, 1.0, 1.0, G)
 check('T8 align_to survives stacking', abs(fy - gy_) < 1e-9, '%s vs %s' % (fy, gy_))
 
+# ── T9: parallel circuits from one device fan their elbows out ───────────
+# ConnectCAD turns every circuit at the same distance out by default, so a
+# fan-out into a stacked column draws all its vertical runs on top of one
+# another. The real drawing staggers ControlPoint03X per circuit.
+def circ():
+    return Obj('Circuit', {'Signal': '', 'Cable': '', 'Label': '',
+                           'CircuitType': '', 'ControlPoint03X': ''})
+
+prefs = dict(m.PREF_DEFAULTS, circuit_stagger_inches=0.5)
+
+first = circ()
+m.finish_circuit(first, {'signal': 'LINE'}, prefs, 0, 1.0)
+check('T9 the first circuit keeps ConnectCAD default routing',
+      first.fields['ControlPoint03X'] == '', repr(first.fields))
+
+offsets = []
+for n in range(1, 4):
+    c = circ()
+    written = m.finish_circuit(c, {'signal': 'LINE'}, prefs, n, 1.0)
+    offsets.append(float(c.fields['ControlPoint03X']))
+    if n == 1:
+        check('T9 a staggered elbow is reported', 'elbow' in written, repr(written))
+check('T9 each later circuit turns further out',
+      offsets == sorted(offsets) and len(set(offsets)) == 3, repr(offsets))
+check('T9 spaced by the preference', offsets == [1.0, 1.5, 2.0], repr(offsets))
+
+# Document units: a drawing in feet gets feet.
+feet = circ()
+m.finish_circuit(feet, {'signal': 'LINE'}, prefs, 1, 1.0 / 12.0)
+check('T9 offsets scale into document units',
+      abs(float(feet.fields['ControlPoint03X']) - 1.0 / 12.0) < 1e-4,
+      repr(feet.fields['ControlPoint03X']))
+
+off = dict(m.PREF_DEFAULTS, circuit_stagger_inches=0.0)
+none = circ()
+written = m.finish_circuit(none, {'signal': 'LINE'}, off, 3, 1.0)
+check('T9 zero turns staggering off entirely',
+      none.fields['ControlPoint03X'] == '' and 'elbow' not in written,
+      repr(none.fields))
+
+check('T9 the default is on', m.PREF_DEFAULTS['circuit_stagger_inches'] > 0)
+
 R.report_and_exit()

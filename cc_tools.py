@@ -4441,6 +4441,7 @@ PREF_DEFAULTS = {
     # out: contiguous regions of a dense field, with no space between them.
     'section_gap_inches': 0.0,  # blank space between sections
     'device_gap_inches': 0.5,   # blank space between stacked devices in a column
+    'circuit_stagger_inches': 0.5,  # how far apart parallel circuit elbows sit; 0 = off
     'circuit_type': '',         # '' = leave ConnectCAD's own default alone
     'label_symbol': '',         # '' = leave ConnectCAD's own default alone
 }
@@ -4474,6 +4475,7 @@ PREF_RANGES = {
     'row_inches': (0.25, 240.0),
     'section_gap_inches': (0.0, 240.0),
     'device_gap_inches': (0.0, 240.0),
+    'circuit_stagger_inches': (0.0, 48.0),
 }
 
 
@@ -4996,6 +4998,8 @@ def tool_search():
 pColLbl, pColEdit = 604, 605
 pRowLbl, pRowEdit = 606, 607
 pGapLbl, pGapEdit = 608, 609
+pStackLbl, pStackEdit = 615, 616
+pElbowLbl, pElbowEdit = 617, 618
 pTypeLbl, pTypePopup = 610, 611
 pLabelLbl, pLabelEdit = 612, 613
 pNote = 614
@@ -5031,6 +5035,12 @@ def tool_preferences():
     vs.CreateStaticText(dialog, pGapLbl, 'Gap between sections (inches):', -1)
     vs.CreateEditText(dialog, pGapEdit,
                       '{:g}'.format(prefs['section_gap_inches']), 10)
+    vs.CreateStaticText(dialog, pStackLbl, 'Gap between stacked devices:', -1)
+    vs.CreateEditText(dialog, pStackEdit,
+                      '{:g}'.format(prefs['device_gap_inches']), 10)
+    vs.CreateStaticText(dialog, pElbowLbl, 'Circuit elbow stagger (0 = off):', -1)
+    vs.CreateEditText(dialog, pElbowEdit,
+                      '{:g}'.format(prefs['circuit_stagger_inches']), 10)
 
     vs.CreateStaticText(dialog, pTypeLbl, 'Circuit line mode:', -1)
     # Filled in kSetup, for the same reason as the search dialog's.
@@ -5052,7 +5062,11 @@ def tool_preferences():
     vs.SetRightItem(dialog, pRowLbl, pRowEdit, 0, 0)
     vs.SetBelowItem(dialog, pRowLbl, pGapLbl, 0, 0)
     vs.SetRightItem(dialog, pGapLbl, pGapEdit, 0, 0)
-    vs.SetBelowItem(dialog, pGapLbl, pTypeLbl, 0, 8)
+    vs.SetBelowItem(dialog, pGapLbl, pStackLbl, 0, 0)
+    vs.SetRightItem(dialog, pStackLbl, pStackEdit, 0, 0)
+    vs.SetBelowItem(dialog, pStackLbl, pElbowLbl, 0, 0)
+    vs.SetRightItem(dialog, pElbowLbl, pElbowEdit, 0, 0)
+    vs.SetBelowItem(dialog, pElbowLbl, pTypeLbl, 0, 8)
     vs.SetRightItem(dialog, pTypeLbl, pTypePopup, 0, 0)
     vs.SetBelowItem(dialog, pTypeLbl, pLabelLbl, 0, 0)
     vs.SetRightItem(dialog, pLabelLbl, pLabelEdit, 0, 0)
@@ -5077,6 +5091,12 @@ def tool_preferences():
                 'section_gap_inches': read_number(dialog, pGapEdit,
                                                   prefs['section_gap_inches'],
                                                   'section_gap_inches'),
+                'device_gap_inches': read_number(dialog, pStackEdit,
+                                                 prefs['device_gap_inches'],
+                                                 'device_gap_inches'),
+                'circuit_stagger_inches': read_number(
+                    dialog, pElbowEdit, prefs['circuit_stagger_inches'],
+                    'circuit_stagger_inches'),
                 'circuit_type': (CIRCUIT_TYPES[picked]
                                  if 0 <= picked < len(CIRCUIT_TYPES) else ''),
                 'label_symbol': (vs.GetItemText(dialog, pLabelEdit) or '').strip(),
@@ -6236,7 +6256,39 @@ def apply_signal_class(handle, signal):
         return False
 
 
-def finish_circuit(handle, circuit, prefs):
+# Where a circuit turns. ConnectCAD routes with elbows, and by default every
+# circuit leaving one device turns at the same distance out -- so a fan-out to a
+# stacked column draws all its vertical runs on top of each other.
+#
+# The real drawing staggers them. Two circuits from SWTCH 4.01, on LAN 2 and
+# LAN 3, carry ControlPoint03X of 0.75" and 2.625" respectively: the elbow sits
+# further out for the second, so the drops do not coincide.
+#
+# INFERRED, from two samples: ControlPoint03X is the distance from the SOURCE
+# socket to the elbow, and ControlPoint02X the matching distance back from the
+# destination. The drawing's own values are consistent with that reading and
+# with nothing else obvious, but it has not been confirmed against the binary.
+# Setting circuit_stagger_inches to 0 turns this off and leaves ConnectCAD's
+# own routing alone.
+CIRCUIT_ELBOW_FIELD = 'ControlPoint03X'
+
+
+def stagger_circuit(handle, index, prefs, upi):
+    """Push this circuit's elbow further out than the one before it.
+
+    `index` counts circuits leaving the same device, so the first keeps the
+    default and each after it turns a little further along."""
+    step = prefs.get('circuit_stagger_inches',
+                     PREF_DEFAULTS['circuit_stagger_inches'])
+    if not step or index <= 0:
+        return False
+    # Document units, like every other length ConnectCAD stores.
+    offset = (index + 1) * step * (upi or 1.0)
+    field = resolve_field(handle, [CIRCUIT_ELBOW_FIELD]) or CIRCUIT_ELBOW_FIELD
+    return write_field(handle, field, '{:g}'.format(offset))
+
+
+def finish_circuit(handle, circuit, prefs, elbow_index=0, upi=1.0):
     """Write the job's own values onto a circuit ConnectSelected just made.
 
     ConnectCAD derives a circuit's endpoints from the sockets it joined, but
@@ -6284,6 +6336,13 @@ def finish_circuit(handle, circuit, prefs):
     signal = (circuit.get('signal') or '').strip()
     if signal and apply_signal_class(handle, signal):
         written.append('class')
+
+    if stagger_circuit(handle, elbow_index, prefs, upi):
+        written.append('elbow')
+        try:
+            vs.ResetObject(handle)
+        except Exception:
+            pass
     return written
 
 
@@ -6358,8 +6417,13 @@ def wire_job(job, made, log):
         actual.setdefault(key, []).append(handle)
 
     prefs = load_prefs()
+    upi = units_per_inch()[0]
+    # How many circuits have already left this device, so each one after the
+    # first turns a little further out and the drops do not coincide.
+    leaving = {}
     missing = []
     finished = 0
+    staggered = 0
     for circuit in circuits:
         source = circuit.get('from') or {}
         destination = circuit.get('to') or {}
@@ -6371,14 +6435,23 @@ def wire_job(job, made, log):
             # Spend it, so a second identical-looking circuit needs a second
             # real one rather than matching the same object twice.
             handle = found.pop(0)
-            if finish_circuit(handle, circuit, prefs):
+            origin = source.get('device')
+            index = leaving.get(origin, 0)
+            leaving[origin] = index + 1
+            written = finish_circuit(handle, circuit, prefs, index, upi)
+            if written:
                 finished += 1
+            if 'elbow' in written:
+                staggered += 1
         else:
             missing.append((circuit, 'no circuit found between these sockets'))
 
     if finished:
         log.append('  {} circuit(s) given their signal and cable name'.format(
             finished))
+    if staggered:
+        log.append('  {} circuit(s) had their elbow moved so parallel runs do '
+                   'not overlap'.format(staggered))
     return len(circuits) - len(missing), missing
 
 
