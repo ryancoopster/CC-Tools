@@ -51,6 +51,16 @@ SOCKET_TAG_FIELDS   = ['tag', 'DisplayTag', 'Display Tag']
 PANEL_DEVICE_FIELDS = ['DeviceName', 'Device Name']
 PCONN_DEVICE_FIELDS = ['ConnectedDev']
 PCONN_SOCKET_FIELDS = ['ConnectedSkt']
+# A PanelConnector names its socket TWICE, in two different fields, and they
+# are not interchangeable:
+#   ConnectedSkt          what the connector is wired to
+#   SocketName            the socket this connector REPRESENTS on the panel
+#   DisplayTag            the label printed for it
+# A real drawing was found carrying the socket name in SocketName/DisplayTag
+# with ConnectedSkt empty, so syncing only ConnectedSkt left every panel
+# connector pointing at a socket name that no longer existed.
+PCONN_OWN_SOCKET_FIELDS = ['SocketName', 'Socket Name']
+PCONN_OWN_TAG_FIELDS = ['DisplayTag', 'Display Tag']
 
 # ConnectCAD placeholders for "not connected" / "external". They are not names
 # and must never seed or receive a rename.
@@ -438,13 +448,50 @@ def unsynced_socket_references(edits, sync_edits):
     for handle in walk_document():
         if classify(handle) != 'panelconnector' or handle in handled:
             continue
-        skt_field = resolve_field(handle, PCONN_SOCKET_FIELDS)
         dev_field = resolve_field(handle, PCONN_DEVICE_FIELDS)
-        socket_name = read_field(handle, skt_field) if skt_field else ''
-        if socket_name in renamed:
-            stranded.append((read_field(handle, dev_field) if dev_field else '',
-                             socket_name))
+        for candidates in (PCONN_SOCKET_FIELDS, PCONN_OWN_SOCKET_FIELDS):
+            field = resolve_field(handle, candidates)
+            value = read_field(handle, field) if field else ''
+            if value in renamed:
+                stranded.append(
+                    (read_field(handle, dev_field) if dev_field else '', value))
+                break
     return stranded
+
+
+def unambiguous_socket_map(edits):
+    """old socket name -> new, but ONLY where every rename agrees.
+
+    Socket names repeat across devices -- 'LAN_IN 1' is on nearly every
+    speaker -- so a bare name is not normally enough to identify one. It IS
+    enough when every socket carrying that name in this run is being renamed to
+    the same thing: whichever one a reference meant, the answer is the same.
+
+    That is what makes a PanelConnector's SocketName safe to follow even when
+    nothing on it says which device it belongs to. A name renamed two different
+    ways is dropped from the map rather than guessed at."""
+    proposed = {}
+    for e in edits:
+        if e['kind'] != 'socket' or not e['is_link_name']:
+            continue
+        if is_unnamed(e['old']) or is_unnamed(e['new']):
+            continue
+        proposed.setdefault(e['old'], set()).add(e['new'])
+    return dict((old, list(news)[0]) for old, news in proposed.items()
+                if len(news) == 1 and list(news)[0] != old)
+
+
+def owning_panel_device(handle, parents):
+    """The device name of the PanelLayout a connector sits in, or ''."""
+    seen = 0
+    current = parents.get(handle)
+    while current is not None and seen < 8:
+        if classify(current) == 'panel':
+            field = resolve_field(current, PANEL_DEVICE_FIELDS)
+            return read_field(current, field) if field else ''
+        current = parents.get(current)
+        seen += 1
+    return ''
 
 
 def plan_link_sync(edits, parents):
@@ -462,8 +509,10 @@ def plan_link_sync(edits, parents):
     device_map = link_name_map(edits, 'device')
     equip_map = link_name_map(edits, 'equipment')
     socket_map = socket_rename_map(edits, parents)
+    plain_socket_map = unambiguous_socket_map(edits)
 
-    if not device_map and not equip_map and not socket_map:
+    if not device_map and not equip_map and not socket_map \
+            and not plain_socket_map:
         return [], True
 
     sync_edits = []
@@ -606,6 +655,34 @@ def plan_link_sync(edits, parents):
                     sync_edits.append(
                         make_edit(h, 'panelconnector', skt_field, skt_old,
                                   socket_map[key], False))
+
+            # The connector's OWN socket name and label. Scoped by whichever
+            # device identifier it has -- its ConnectedDev, or the DeviceName
+            # of the PanelLayout it sits in -- and where it has neither, by a
+            # rename that is unambiguous across the whole run.
+            own_field = resolve_field(h, PCONN_OWN_SOCKET_FIELDS)
+            own_old = read_field(h, own_field) if own_field else ''
+            if own_field and not is_unnamed(own_old):
+                panel_device = dev_old or owning_panel_device(h, parents)
+                new_name = None
+                if not is_unnamed(panel_device) \
+                        and (panel_device, own_old) in socket_map:
+                    new_name = socket_map[(panel_device, own_old)]
+                elif own_old in plain_socket_map:
+                    new_name = plain_socket_map[own_old]
+                if new_name and new_name != own_old:
+                    sync_edits.append(
+                        make_edit(h, 'panelconnector', own_field, own_old,
+                                  new_name, False))
+
+                    # The label follows only when it was still showing the
+                    # socket's name. A tag someone has customised is theirs.
+                    tag_field = resolve_field(h, PCONN_OWN_TAG_FIELDS)
+                    tag_old = read_field(h, tag_field) if tag_field else ''
+                    if tag_field and tag_old == own_old:
+                        sync_edits.append(
+                            make_edit(h, 'panelconnector', tag_field, tag_old,
+                                      new_name, False))
 
             if dev_field and full_device_map and not is_unnamed(dev_old):
                 if dev_old in full_device_map and full_device_map[dev_old] != dev_old:

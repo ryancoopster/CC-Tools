@@ -212,4 +212,101 @@ check('T10 a connector on a DIFFERENT device is left alone',
       not any(e['field'] == 'ConnectedSkt' for e in sync),
       'SPK B/LAN_IN 1 is a different socket that happens to share a name')
 
+# ── T11: the field a real drawing actually uses ──────────────────────────
+# From ART Schematics.vwx: panel connectors carried the socket name in
+# SocketName and DisplayTag, with ConnectedSkt empty. Syncing only
+# ConnectedSkt left every one of them pointing at a name that no longer
+# existed, and said nothing.
+def own_pconn(socket_name, tag=None, connected_dev='', connected_skt=''):
+    return Obj('PanelConnector', {
+        'SocketName': socket_name,
+        'DisplayTag': socket_name if tag is None else tag,
+        'ConnectedDev': connected_dev, 'ConnectedSkt': connected_skt})
+
+
+def rename_socket(objects, old='ISL - 25', new='TRUNK - 25'):
+    mod, _vs = load(Doc([objects]))
+    hs = mod.walk_document()
+    target = [h for h in hs if mod.classify(h) == 'socket'
+              and mod.read_field(h, 'name') == old]
+    eds = [mod.make_edit(h, 'socket', 'name', old, new, True) for h in target]
+    _w, par = mod.walk_document(with_parents=True)
+    sync, _u = mod.plan_link_sync(eds, par)
+    return mod, eds, mod.dedupe_edits(eds, sync)
+
+
+# The real shape: connector knows only its own SocketName.
+mod, eds, sync = rename_socket([
+    Obj('Device', {'name': 'CTP_WEST PB RACK', 'tag': 'CTP_WEST PB RACK'},
+        children=[sock('ISL - 25')]),
+    own_pconn('ISL - 25'),
+])
+fields = {(e['field'], e['new']) for e in sync}
+check('T11 SocketName follows the rename',
+      ('SocketName', 'TRUNK - 25') in fields, repr(fields))
+check('T11 DisplayTag follows when it showed the socket name',
+      ('DisplayTag', 'TRUNK - 25') in fields, repr(fields))
+
+# A customised label is the user's and must not be overwritten.
+mod, eds, sync = rename_socket([
+    Obj('Device', {'name': 'CTP_WEST PB RACK', 'tag': 'CTP_WEST PB RACK'},
+        children=[sock('ISL - 25')]),
+    own_pconn('ISL - 25', tag='WEST TRUNK A'),
+])
+fields = {(e['field'], e['new']) for e in sync}
+check('T11 SocketName still follows', ('SocketName', 'TRUNK - 25') in fields)
+check('T11 a customised DisplayTag is left alone',
+      not any(f == 'DisplayTag' for f, _v in fields), repr(fields))
+
+# Two devices, same socket name, both renamed the same way: unambiguous.
+mod, eds, sync = rename_socket([
+    Obj('Device', {'name': 'CTP_WEST PB RACK', 'tag': 'CTP_WEST PB RACK'},
+        children=[sock('ISL - 25')]),
+    Obj('Device', {'name': 'CTP_EAST PB RACK', 'tag': 'CTP_EAST PB RACK'},
+        children=[sock('ISL - 25')]),
+    own_pconn('ISL - 25'),
+])
+check('T11 an unambiguous rename reaches an unscoped connector',
+      any(e['field'] == 'SocketName' for e in sync), repr(sync))
+
+# Renamed two different ways: ambiguous, so the bare name is NOT followed.
+mod2, _vs = load(Doc([[
+    Obj('Device', {'name': 'A', 'tag': 'A'}, children=[sock('ISL - 25')]),
+    Obj('Device', {'name': 'B', 'tag': 'B'}, children=[sock('ISL - 25')]),
+    own_pconn('ISL - 25'),
+]]))
+hs = mod2.walk_document()
+socks = [h for h in hs if mod2.classify(h) == 'socket']
+eds = [mod2.make_edit(socks[0], 'socket', 'name', 'ISL - 25', 'TRUNK - 25', True),
+       mod2.make_edit(socks[1], 'socket', 'name', 'ISL - 25', 'SPUR - 25', True)]
+_w, par = mod2.walk_document(with_parents=True)
+sync, _u = mod2.plan_link_sync(eds, par)
+check('T11 an ambiguous rename is not guessed at',
+      not any(e['field'] == 'SocketName' for e in sync),
+      'two answers for one name means no safe answer')
+check('T11 unambiguous_socket_map drops the ambiguous one',
+      mod2.unambiguous_socket_map(eds) == {}, repr(mod2.unambiguous_socket_map(eds)))
+
+# Scoping still works when the connector sits inside a panel layout.
+mod, eds, sync = rename_socket([
+    Obj('Device', {'name': 'CTP_WEST PB RACK', 'tag': 'CTP_WEST PB RACK'},
+        children=[sock('ISL - 25')]),
+    Obj('PanelLayout', {'DeviceType': 'CustomPanel',
+                        'DeviceName': 'CTP_WEST PB RACK'},
+        children=[own_pconn('ISL - 25')]),
+])
+check('T11 a connector nested in a panel layout is scoped by its device',
+      any(e['field'] == 'SocketName' and e['new'] == 'TRUNK - 25' for e in sync),
+      repr([(e['field'], e['new']) for e in sync]))
+
+# ConnectedSkt, where a drawing does use it, still works.
+mod, eds, sync = rename_socket([
+    Obj('Device', {'name': 'DEV', 'tag': 'DEV'}, children=[sock('ISL - 25')]),
+    Obj('PanelConnector', {'SocketName': '', 'DisplayTag': 'P',
+                           'ConnectedDev': 'DEV', 'ConnectedSkt': 'ISL - 25'}),
+])
+check('T11 ConnectedSkt is still synced',
+      any(e['field'] == 'ConnectedSkt' and e['new'] == 'TRUNK - 25' for e in sync),
+      repr([(e['field'], e['new']) for e in sync]))
+
 R.report_and_exit()
