@@ -147,4 +147,69 @@ check('T9 the launcher is not given a summary to pop up',
       body.rstrip().endswith("return 'done', None"), body[-160:])
 check('T9 a report is still written', "save_text('find_replace'" in body)
 
+# ── T10: a socket rename reaches the panel connector ─────────────────────
+# Reported from a real drawing: renaming a socket left PanelConnector.
+# ConnectedSkt pointing at a name that no longer existed.
+def socket_case(dev_name, dev_tag, pconn_dev):
+    doc = Doc([[
+        Obj('Device', {'name': dev_name, 'tag': dev_tag},
+            children=[sock('LAN_IN 1')]),
+        pconn(pconn_dev, 'LAN_IN 1'),
+    ]])
+    mod, _vs = load(doc)
+    hs = mod.walk_document()
+    cands = [c for c in mod.find_replacements(hs, 'LAN_IN 1', 'NET_IN 1',
+                                              {'socket'}, whole=True)
+             if c['is_link_name']]
+    eds = [mod.make_edit(c['handle'], c['kind'], c['field'], c['old'],
+                         c['new'], c['is_link_name']) for c in cands]
+    _w, par = mod.walk_document(with_parents=True)
+    sync, _u = mod.plan_link_sync(eds, par)
+    sync = mod.dedupe_edits(eds, sync)
+    return mod, eds, sync
+
+
+# The connector references the device by NAME.
+_m, eds, sync = socket_case('SPK 1.01', 'SPK 1.01', 'SPK 1.01')
+check('T10 connector matched by device name',
+      any(e['field'] == 'ConnectedSkt' and e['new'] == 'NET_IN 1' for e in sync),
+      repr([(e['kind'], e['field']) for e in sync]))
+
+# The connector references the device by its TAG, which has drifted from the
+# name. Keying on the name alone silently missed this.
+_m, eds, sync = socket_case('SPK 1.01', 'SPK ONE', 'SPK ONE')
+check('T10 connector matched by device TAG when it differs',
+      any(e['field'] == 'ConnectedSkt' and e['new'] == 'NET_IN 1' for e in sync),
+      'ConnectedDev can hold the tag, not the name')
+
+# Neither matches: nothing can link it, and that must be REPORTED not hidden.
+mod, eds, sync = socket_case('SPK 1.01', 'SPK 1.01', 'SOMETHING ELSE')
+check('T10 an unmatchable connector is not silently rewritten',
+      not any(e['field'] == 'ConnectedSkt' for e in sync), repr(sync))
+stranded = mod.unsynced_socket_references(eds, sync)
+check('T10 and it IS reported', stranded == [('SOMETHING ELSE', 'LAN_IN 1')],
+      repr(stranded))
+
+# A connector that was synced is not also reported as stranded.
+mod, eds, sync = socket_case('SPK 1.01', 'SPK 1.01', 'SPK 1.01')
+check('T10 a synced connector is not reported as stranded',
+      mod.unsynced_socket_references(eds, sync) == [],
+      repr(mod.unsynced_socket_references(eds, sync)))
+
+# Socket names repeat across devices, so the device must stay part of the key.
+two = Doc([[
+    Obj('Device', {'name': 'SPK A', 'tag': 'SPK A'}, children=[sock('LAN_IN 1')]),
+    Obj('Device', {'name': 'SPK B', 'tag': 'SPK B'}, children=[sock('LAN_IN 1')]),
+    pconn('SPK B', 'LAN_IN 1'),
+]])
+mod, _vs = load(two)
+hs = mod.walk_document()
+target = [h for h in hs if mod.classify(h) == 'socket'][0]      # the one in SPK A
+eds = [mod.make_edit(target, 'socket', 'name', 'LAN_IN 1', 'NET_IN 1', True)]
+_w, par = mod.walk_document(with_parents=True)
+sync, _u = mod.plan_link_sync(eds, par)
+check('T10 a connector on a DIFFERENT device is left alone',
+      not any(e['field'] == 'ConnectedSkt' for e in sync),
+      'SPK B/LAN_IN 1 is a different socket that happens to share a name')
+
 R.report_and_exit()

@@ -392,11 +392,16 @@ def link_name_map(edits, kind):
 
 
 def socket_rename_map(edits, parents):
-    """(device name, old socket name) -> new socket name.
+    """(owning device identifier, old socket name) -> new socket name.
 
-    Socket names are only unique within their parent device, so the device name
-    has to be part of the key. PanelConnector rows are matched on the same
-    pair."""
+    Socket names are only unique within their parent device, so the device has
+    to be part of the key -- 'LAN_IN 1' exists on almost every speaker.
+
+    Keyed on the device's NAME **and** its TAG, both. A PanelConnector's
+    ConnectedDev holds one of the two, and in a drawing where they have drifted
+    apart -- which is common enough that a whole tool exists to reconcile them
+    -- keying on the name alone silently fails to match, and the connector
+    keeps pointing at a socket name that no longer exists."""
     out = {}
     for e in edits:
         if e['kind'] != 'socket' or not e['is_link_name']:
@@ -406,11 +411,40 @@ def socket_rename_map(edits, parents):
         device = owning_device(e['handle'], parents)
         if device is None:
             continue
-        field = resolve_field(device, DEVICE_NAME_FIELDS)
-        dev_name = read_field(device, field) if field else ''
-        if not is_unnamed(dev_name):
-            out[(dev_name, e['old'])] = e['new']
+        for candidates in (DEVICE_NAME_FIELDS, DEVICE_TAG_FIELDS):
+            field = resolve_field(device, candidates)
+            identifier = read_field(device, field) if field else ''
+            if not is_unnamed(identifier):
+                out[(identifier, e['old'])] = e['new']
     return out
+
+
+def unsynced_socket_references(edits, sync_edits):
+    """Panel connectors still pointing at a socket name this run renamed.
+
+    A socket rename reaches PanelConnector.ConnectedSkt only when the
+    connector's ConnectedDev matches the socket's owning device. When it does
+    not, nothing happens and nothing is said -- so this goes looking, and the
+    report names every connector left behind."""
+    renamed = set(e['old'] for e in edits
+                  if e['kind'] == 'socket' and e['is_link_name']
+                  and not is_unnamed(e['old']))
+    if not renamed:
+        return []
+    handled = set(e['handle'] for e in sync_edits
+                  if e['kind'] == 'panelconnector')
+
+    stranded = []
+    for handle in walk_document():
+        if classify(handle) != 'panelconnector' or handle in handled:
+            continue
+        skt_field = resolve_field(handle, PCONN_SOCKET_FIELDS)
+        dev_field = resolve_field(handle, PCONN_DEVICE_FIELDS)
+        socket_name = read_field(handle, skt_field) if skt_field else ''
+        if socket_name in renamed:
+            stranded.append((read_field(handle, dev_field) if dev_field else '',
+                             socket_name))
+    return stranded
 
 
 def plan_link_sync(edits, parents):
@@ -5016,6 +5050,9 @@ def tool_find_replace():
         sync_edits = dedupe_edits(edits, sync_edits)
     duplicates = find_duplicate_names(edits + sync_edits)
 
+    stranded = unsynced_socket_references(edits, sync_edits) if asked['sync'] \
+        else []
+
     applied = apply_edits(edits + sync_edits)
     reset = reset_circuits()
 
@@ -5049,6 +5086,22 @@ def tool_find_replace():
                 kind, name,
                 '  (merged by this run)' if detail['created_here'] else ''))
         lines.append('')
+    if stranded:
+        lines.append('PANEL CONNECTORS LEFT POINTING AT A RENAMED SOCKET')
+        lines.append('These reference a socket name this run changed, but '
+                     'their ConnectedDev does')
+        lines.append('not match the socket\'s owning device, so nothing '
+                     'linked them. Check the')
+        lines.append('device name against the connector below, then fix by '
+                     'hand or reconcile')
+        lines.append('names with Match Names and Display Tags first.')
+        for device_name, socket_name in stranded[:20]:
+            lines.append('  device "{}"  socket "{}"'.format(
+                device_name or '(blank)', socket_name))
+        if len(stranded) > 20:
+            lines.append('  ... and {} more'.format(len(stranded) - 20))
+        lines.append('')
+
     lines.append('CHANGES')
     lines.extend(format_edits(applied))
 
