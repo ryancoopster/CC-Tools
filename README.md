@@ -17,6 +17,7 @@ The launcher is split in two: the tools used while drafting, and the ones used w
 | **Match Names and Display Tags** | Finds objects whose Name and Display Tag disagree and lets you choose which one wins — in bulk, or one at a time. |
 | **Spell Check** | Finds likely typos in free-text fields, and doubles as a reviewable find-and-replace across every ConnectCAD object. |
 | **Search ConnectCAD Objects** | Read-only. Searches **every field** of every ConnectCAD object — the ones Vectorworks' own Find and Replace cannot see. Selects the matches in the drawing. |
+| **Find and Replace** | Replaces text in device and socket names and tags, and circuit labels, numbers and cable names. Shows every proposed change in a table to tick before anything is written. |
 | **Draw schematic job** | Opens a file dialog, then builds the devices and wiring from the job file Claude gave you. Falls back to ConnectCAD's device database for a device's real connectors. |
 | **Preferences** | Column spacing, row spacing, gap between sections, circuit line mode, device label symbol. |
 | **Export prompt for Claude** | Read-only. Writes a profile of how this drawing is built, to hand Claude so new work matches it. |
@@ -52,6 +53,30 @@ will: names link by exact string, so `SPK 3.04 US FILL HR LOWER ` and
 identical.
 
 Results go to a timestamped CSV whether or not you select them.
+
+### Find and Replace
+
+Search finds; this changes. It offers only the fields that are free text *and*
+identify the object: device and socket names and tags, and a circuit's Label,
+Number and Cable. Dropdown values, endpoint caches and library fields are never
+touched — a "correction" in a dropdown is a value ConnectCAD rejects, and an
+endpoint cache is rewritten on the next reset anyway.
+
+Scope is the usual three — selection, layer, whole document — with tick boxes
+per object type and an option to match the whole string rather than part of it.
+Whole-string is what lets you rename `SPK 1.01` without also hitting
+`SPK 1.010`.
+
+**Nothing is written until you have seen it.** Running the search produces a
+table of every proposed change — type, field, the current text and the text
+after replacing — with each row ticked. Untick what you don't want, press
+Replace, and it happens with no further prompts.
+
+The one that matters: **a device name is a link key.** Renaming a device has to
+rename its equipment item and every panel reference too, or they come apart.
+That is on by default and can be turned off, which is occasionally what you
+want and usually not. Those follow-on edits aren't listed in the table because
+they aren't choices — they're what keeps the rename from breaking the drawing.
 
 ### Spell Check, and why it isn't just a dictionary
 

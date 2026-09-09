@@ -79,6 +79,7 @@ TOOL_PROMPT    = 6
 TOOL_JOB       = 7
 TOOL_PREFS     = 8
 TOOL_SEARCH    = 9
+TOOL_REPLACE   = 10
 
 kOK    = 1
 kSetup = 12255
@@ -4679,6 +4680,387 @@ def validate_job_path(path):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# TOOL: FIND AND REPLACE  (writes)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Vectorworks' own Find and Replace cannot see inside plug-in object records,
+# so none of this is reachable from it. Search finds; this changes.
+#
+# ONLY the fields that are free text and identify the object are offered:
+# device and socket names and tags, and a circuit's Label, Number and Cable.
+# Deliberately NOT offered:
+#   signal / connector / cable type  chosen from lists; a "correction" would be
+#                                    a value ConnectCAD rejects
+#   Src_Dev_Name and friends         caches, rewritten on reset
+#   loc_room / loc_rack              references to Room and Rack objects
+#   make / model / description       library values, not per-instance text
+#
+# Renaming a device is not a text edit -- it is a rename of a LINK KEY. Every
+# equipment item, panel layout and panel connector pointing at the old name has
+# to move with it, which is what plan_link_sync does for the other tools and
+# does here too. Those follow-on edits are not offered as choices because they
+# are not optional: leaving one behind is how a device loses its equipment.
+
+REPLACE_FIELDS = {
+    'device': [(DEVICE_NAME_FIELDS, True), (DEVICE_TAG_FIELDS, False)],
+    'equipment': [(EQUIP_NAME_FIELDS, True)],
+    'socket': [(SOCKET_NAME_FIELDS, True), (SOCKET_TAG_FIELDS, False)],
+    'circuit': [(['Label'], False), (['Number'], False), (['Cable'], False)],
+}
+
+# What each tick box covers. Equipment rides with devices because an equipment
+# item's name IS its device's name -- they are one string in two places.
+REPLACE_GROUPS = {
+    'devices': ('device', 'equipment'),
+    'sockets': ('socket',),
+    'circuits': ('circuit',),
+}
+
+fFindLbl, fFindEdit = 804, 805
+fReplLbl, fReplEdit = 806, 807
+fScopeLbl, fScopePopup = 808, 809
+fKindLbl, fDevChk, fSktChk, fCircChk = 810, 811, 812, 813
+fWholeChk, fCaseChk, fSyncChk, fNoteTxt = 814, 815, 817, 816
+
+gLB, gCountTxt, gAllBtn, gNoneBtn, gHintTxt = 820, 821, 822, 823, 824
+GCOL_USE, GCOL_TYPE, GCOL_FIELD, GCOL_OLD, GCOL_NEW = 0, 1, 2, 3, 4
+TICK, UNTICK = 'YES', ''
+
+
+def replace_in_text(value, find, replacement, case_sensitive, whole):
+    """The value after replacement, or None if nothing matched.
+
+    Whole-string compares the ENTIRE field, which is how you rename exactly
+    'SPK 1.01' without touching 'SPK 1.010'. Otherwise every occurrence inside
+    the value is replaced."""
+    if not find or value is None:
+        return None
+    if whole:
+        matched = (value == find if case_sensitive
+                   else value.lower() == find.lower())
+        return replacement if matched and value != replacement else None
+
+    if case_sensitive:
+        if find not in value:
+            return None
+        out = value.replace(find, replacement)
+        return out if out != value else None
+
+    # Case-insensitive substring: walk the lowered copy so the untouched parts
+    # of the original keep their own casing.
+    lowered, needle = value.lower(), find.lower()
+    if needle not in lowered:
+        return None
+    out = []
+    index = 0
+    while True:
+        found = lowered.find(needle, index)
+        if found < 0:
+            out.append(value[index:])
+            break
+        out.append(value[index:found])
+        out.append(replacement)
+        index = found + len(needle)
+    result = ''.join(out)
+    return result if result != value else None
+
+
+def find_replacements(handles, find, replacement, kinds, case_sensitive=False,
+                      whole=False):
+    """Every field that would change. Returns a list of candidate dicts.
+
+    Read-only: this plans, it does not write. What comes back is exactly what
+    the table shows, so nothing can change that the user did not see."""
+    out = []
+    for handle in handles:
+        kind = classify(handle)
+        if kind is None or kind not in kinds:
+            continue
+        for candidates, is_link_name in REPLACE_FIELDS.get(kind, []):
+            field = resolve_field(handle, candidates)
+            if not field:
+                continue
+            value = read_field(handle, field)
+            if is_unnamed(value):
+                # '<DEVICE>' and friends are placeholders, not text. Renaming
+                # one would turn a sentinel into a name.
+                continue
+            new = replace_in_text(value, find, replacement, case_sensitive,
+                                  whole)
+            if new is None or not new.strip():
+                continue
+            out.append({
+                'handle': handle, 'kind': kind, 'field': field,
+                'old': value, 'new': new, 'is_link_name': is_link_name,
+                'label': object_label(handle, kind),
+            })
+    return out
+
+
+def ask_find_replace():
+    """Returns the options dict, or None if cancelled."""
+    chosen = {}
+    dlg = vs.CreateLayout('Find and Replace', False, 'Find', 'Cancel')
+
+    vs.CreateStaticText(dlg, fFindLbl, 'Find:', -1)
+    vs.CreateEditText(dlg, fFindEdit, '', 44)
+    vs.CreateStaticText(dlg, fReplLbl, 'Replace with:', -1)
+    vs.CreateEditText(dlg, fReplEdit, '', 44)
+
+    vs.CreateStaticText(dlg, fScopeLbl, 'Look in:', -1)
+    vs.CreatePullDownMenu(dlg, fScopePopup, 26)
+
+    vs.CreateStaticText(dlg, fKindLbl, 'Replace in:', -1)
+    vs.CreateCheckBox(dlg, fDevChk, 'Device names and tags')
+    vs.CreateCheckBox(dlg, fSktChk, 'Socket names and tags')
+    vs.CreateCheckBox(dlg, fCircChk, 'Circuit labels, numbers and cable names')
+
+    vs.CreateCheckBox(dlg, fWholeChk, 'Match the whole string, not part of it')
+    vs.CreateCheckBox(dlg, fCaseChk, 'Match case')
+    vs.CreateCheckBox(dlg, fSyncChk,
+                      'Update linked instances (equipment items, panel '
+                      'references)')
+
+    vs.CreateStaticText(
+        dlg, fNoteTxt,
+        'You will see every proposed change in a list before anything is\n'
+        'altered, and can untick any you do not want.\n\n'
+        'ConnectCAD links a device to its equipment item by NAME, so leaving\n'
+        '"update linked instances" ticked carries panel references and\n'
+        'equipment names along with a rename. Unticking it renames only what\n'
+        'you picked, which WILL unlink them -- occasionally what you want,\n'
+        'usually not.\n\n'
+        'Dropdown values, endpoint caches and library fields are never\n'
+        'touched.', -1)
+
+    vs.SetFirstLayoutItem(dlg, fFindLbl)
+    vs.SetRightItem(dlg, fFindLbl, fFindEdit, 0, 0)
+    vs.SetBelowItem(dlg, fFindLbl, fReplLbl, 0, 0)
+    vs.SetRightItem(dlg, fReplLbl, fReplEdit, 0, 0)
+    vs.SetBelowItem(dlg, fReplLbl, fScopeLbl, 0, 8)
+    vs.SetRightItem(dlg, fScopeLbl, fScopePopup, 0, 0)
+    vs.SetBelowItem(dlg, fScopeLbl, fKindLbl, 0, 8)
+    vs.SetBelowItem(dlg, fKindLbl, fDevChk, 0, 0)
+    vs.SetBelowItem(dlg, fDevChk, fSktChk, 0, 0)
+    vs.SetBelowItem(dlg, fSktChk, fCircChk, 0, 0)
+    vs.SetBelowItem(dlg, fCircChk, fWholeChk, 0, 8)
+    vs.SetBelowItem(dlg, fWholeChk, fCaseChk, 0, 0)
+    vs.SetBelowItem(dlg, fCaseChk, fSyncChk, 0, 0)
+    vs.SetBelowItem(dlg, fSyncChk, fNoteTxt, 0, 10)
+
+    def handler(item, data):
+        if item == kSetup:
+            # Pull-downs are filled here, with the choice POSITION as the last
+            # argument -- building them at construction time gives a menu that
+            # opens empty.
+            vs.AddChoice(dlg, fScopePopup, 'Selected objects only', 0)
+            vs.AddChoice(dlg, fScopePopup, 'Active layer', 1)
+            vs.AddChoice(dlg, fScopePopup, 'Whole document', 2)
+            vs.SelectChoice(dlg, fScopePopup, SCOPE_DOCUMENT, True)
+            vs.SetBooleanItem(dlg, fDevChk, True)
+            vs.SetBooleanItem(dlg, fSktChk, True)
+            vs.SetBooleanItem(dlg, fCircChk, True)
+            vs.SetBooleanItem(dlg, fWholeChk, False)
+            vs.SetBooleanItem(dlg, fCaseChk, False)
+            # On by default: ConnectCAD ties a device to its equipment item by
+            # NAME, so a rename that does not carry the references with it
+            # unlinks them.
+            vs.SetBooleanItem(dlg, fSyncChk, True)
+        elif item == kOK:
+            kinds = set()
+            if vs.GetBooleanItem(dlg, fDevChk):
+                kinds.update(REPLACE_GROUPS['devices'])
+            if vs.GetBooleanItem(dlg, fSktChk):
+                kinds.update(REPLACE_GROUPS['sockets'])
+            if vs.GetBooleanItem(dlg, fCircChk):
+                kinds.update(REPLACE_GROUPS['circuits'])
+            chosen.update({
+                'find': vs.GetItemText(dlg, fFindEdit) or '',
+                'replace': vs.GetItemText(dlg, fReplEdit) or '',
+                'scope': vs.GetSelectedChoiceIndex(dlg, fScopePopup, 0),
+                'kinds': kinds,
+                'whole': vs.GetBooleanItem(dlg, fWholeChk),
+                'case': vs.GetBooleanItem(dlg, fCaseChk),
+                'sync': vs.GetBooleanItem(dlg, fSyncChk),
+            })
+
+    if vs.RunLayoutDialog(dlg, handler) != kOK or not chosen:
+        return None
+    return chosen
+
+
+def choose_replacements(candidates, find, replacement):
+    """Show every proposed change. Returns the ticked ones, or None if cancelled.
+
+    Everything starts ticked: the user asked for these, and having to tick 200
+    rows to accept what you just searched for would be absurd. Untick the ones
+    you do not want.
+
+    The tick is a text cell rather than a checkbox control. List browsers do
+    offer control columns, but their type constants are not documented anywhere
+    I could verify, and an unverifiable constant in a dialog that cannot be
+    tested from here is how you ship a table nobody can use."""
+    state = [True] * len(candidates)
+    dlg = vs.CreateLayout('Replace', False, 'Replace', 'Cancel')
+
+    vs.CreateStaticText(
+        dlg, gCountTxt,
+        '{} change(s) for "{}" -> "{}". Click a row to tick or untick it.'
+        .format(len(candidates), find, replacement), -1)
+    vs.CreateLB(dlg, gLB, 124, 24)
+    vs.CreatePushButton(dlg, gAllBtn, 'Tick all')
+    vs.CreatePushButton(dlg, gNoneBtn, 'Untick all')
+    vs.CreateStaticText(
+        dlg, gHintTxt,
+        'Only ticked rows are changed. Equipment items and panel references\n'
+        'follow a device rename automatically and are not listed here.', -1)
+
+    vs.SetFirstLayoutItem(dlg, gCountTxt)
+    vs.SetBelowItem(dlg, gCountTxt, gLB, 0, 0)
+    vs.SetBelowItem(dlg, gLB, gAllBtn, 0, 8)
+    vs.SetRightItem(dlg, gAllBtn, gNoneBtn, 4, 0)
+    vs.SetBelowItem(dlg, gAllBtn, gHintTxt, 0, 8)
+
+    def paint(row):
+        vs.SetLBItemInfo(dlg, gLB, row, GCOL_USE,
+                         TICK if state[row] else UNTICK, -1)
+
+    def handler(item, data):
+        if item == kSetup:
+            # Columns are inserted at increasing indices; repeatedly inserting
+            # at 0 is a documented header-rendering bug.
+            vs.InsertLBColumn(dlg, gLB, GCOL_USE, 'Replace?', 70)
+            vs.InsertLBColumn(dlg, gLB, GCOL_TYPE, 'Type', 90)
+            vs.InsertLBColumn(dlg, gLB, GCOL_FIELD, 'Field', 110)
+            vs.InsertLBColumn(dlg, gLB, GCOL_OLD, 'Current text', 250)
+            vs.InsertLBColumn(dlg, gLB, GCOL_NEW, 'After replacing', 250)
+            vs.ShowLBHeader(dlg, gLB, True)
+            vs.EnableLBColumnLines(dlg, gLB, True)
+            vs.EnableLBSingleLineSelection(dlg, gLB, True)
+            # OFF: sorting reorders rows and every stored index goes stale,
+            # which would tick the wrong rows. It defaults to ON.
+            vs.EnableLBSorting(dlg, gLB, False)
+
+            vs.EnableLBUpdates(dlg, gLB, False)
+            for index, row in enumerate(candidates):
+                vs.InsertLBItem(dlg, gLB, index, TICK)
+                vs.SetLBItemInfo(dlg, gLB, index, GCOL_TYPE, row['kind'], -1)
+                vs.SetLBItemInfo(dlg, gLB, index, GCOL_FIELD, row['field'], -1)
+                vs.SetLBItemInfo(dlg, gLB, index, GCOL_OLD, row['old'], -1)
+                vs.SetLBItemInfo(dlg, gLB, index, GCOL_NEW, row['new'], -1)
+            vs.EnableLBUpdates(dlg, gLB, True)
+            vs.RefreshLB(dlg, gLB)
+
+        elif item == gLB:
+            # The selected row is re-derived by scanning rather than taken from
+            # the event: arrow keys and type-ahead move the highlight while
+            # reporting rowIndex -1, so trusting the event would toggle
+            # whichever row was last clicked.
+            row = lb_selected_row(dlg, gLB, len(candidates))
+            if 0 <= row < len(candidates):
+                state[row] = not state[row]
+                paint(row)
+
+        elif item in (gAllBtn, gNoneBtn):
+            wanted = (item == gAllBtn)
+            vs.EnableLBUpdates(dlg, gLB, False)
+            for row in range(len(candidates)):
+                state[row] = wanted
+                paint(row)
+            vs.EnableLBUpdates(dlg, gLB, True)
+            vs.RefreshLB(dlg, gLB)
+
+    if vs.RunLayoutDialog(dlg, handler) != kOK:
+        return None
+    return [c for c, ticked in zip(candidates, state) if ticked]
+
+
+def tool_find_replace():
+    """Returns (status, summary)."""
+    asked = ask_find_replace()
+    if asked is None:
+        return 'cancelled', None
+    if not asked['find']:
+        vs.AlrtDialog('Nothing to find.')
+        return 'stopped', None
+    if not asked['kinds']:
+        vs.AlrtDialog('No object types were ticked, so there is nothing to '
+                      'change.')
+        return 'stopped', None
+
+    handles = collect_scope(asked['scope'])
+    candidates = find_replacements(handles, asked['find'], asked['replace'],
+                                   asked['kinds'], asked['case'],
+                                   asked['whole'])
+    if not candidates:
+        vs.AlrtDialog('No matches for "{}".'.format(asked['find']))
+        return 'done', None
+
+    picked = choose_replacements(candidates, asked['find'], asked['replace'])
+    if picked is None:
+        return 'cancelled', None
+    if not picked:
+        return 'done', None
+
+    # From here on nothing else is asked. The user has seen every change and
+    # said yes to it.
+    edits = [make_edit(c['handle'], c['kind'], c['field'], c['old'], c['new'],
+                       c['is_link_name']) for c in picked]
+
+    # References to a renamed device follow it, if asked for. Planned AFTER
+    # the choice, so unticking a rename drops its follow-on edits with it.
+    sync_edits, used_assoc = [], True
+    if asked['sync']:
+        _walked, parents = walk_document(with_parents=True)
+        sync_edits, used_assoc = plan_link_sync(edits, parents)
+        sync_edits = dedupe_edits(edits, sync_edits)
+    duplicates = find_duplicate_names(edits + sync_edits)
+
+    applied = apply_edits(edits + sync_edits)
+    reset = reset_circuits()
+
+    lines = report_header('FIND AND REPLACE')
+    lines.append('Find:        "{}"'.format(asked['find']))
+    lines.append('Replace:     "{}"'.format(asked['replace']))
+    lines.append('Match:       {}{}'.format(
+        'whole string' if asked['whole'] else 'anywhere in the field',
+        ', case-sensitive' if asked['case'] else ''))
+    lines.append('Offered:     {}'.format(len(candidates)))
+    lines.append('Chosen:      {}'.format(len(picked)))
+    if asked['sync']:
+        lines.append('Linked refs: {}{}'.format(
+            len(sync_edits),
+            '' if used_assoc else '  (matched by NAME - no ConnectCAD licence)'))
+    else:
+        lines.append('Linked refs: NOT UPDATED - you unticked that. Any device '
+                     'renamed here')
+        lines.append('             is now unlinked from its equipment item.')
+    lines.append('Applied:     {}'.format(len(applied)))
+    lines.append('Circuits reset: {}'.format(reset))
+    lines.append('')
+    if duplicates:
+        lines.append('NAMES NOW SHARED BY MORE THAN ONE OBJECT')
+        lines.append('Not an error on its own -- one device drawn twice is '
+                     'normal -- but a')
+        lines.append('reference to a duplicated name cannot say which object '
+                     'it means.')
+        for (kind, name), detail in sorted(duplicates.items())[:20]:
+            lines.append('  {:<10} "{}"{}'.format(
+                kind, name,
+                '  (merged by this run)' if detail['created_here'] else ''))
+        lines.append('')
+    lines.append('CHANGES')
+    lines.extend(format_edits(applied))
+
+    save_text('find_replace', '\n'.join(lines))
+    # Nothing is returned for the launcher to report. The user saw every change
+    # in the table and approved it; a summary afterwards would be one more
+    # dialog to dismiss for news they already have. The full record is in the
+    # report either way.
+    return 'done', None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # TOOL: SEARCH CONNECTCAD OBJECTS  (read-only)
 # ═══════════════════════════════════════════════════════════════════════════
 #
@@ -6643,7 +7025,7 @@ lRefChk = 311
 lProbeChk = 312
 lPromptChk, lJobChk = 313, 314
 lPrefsChk, lSetupLbl = 315, 316
-lSearchChk = 317
+lSearchChk, lReplaceChk = 317, 318
 lOrderTxt, lHintTxt = 308, 309
 
 
@@ -6662,6 +7044,7 @@ def ask_which_tools():
     vs.CreateCheckBox(dlg, lMatchChk, 'Match Names and Display Tags')
     vs.CreateCheckBox(dlg, lSpellChk, 'Spell Check')
     vs.CreateCheckBox(dlg, lSearchChk, 'Search ConnectCAD Objects  (read-only)')
+    vs.CreateCheckBox(dlg, lReplaceChk, 'Find and Replace  (writes)')
     vs.CreateCheckBox(dlg, lJobChk, 'Draw schematic job  (writes)')
 
     vs.CreateStaticText(dlg, lSetupLbl, 'Setup and diagnostics:', -1)
@@ -6685,7 +7068,8 @@ def ask_which_tools():
     vs.SetBelowItem(dlg, lNormChk, lMatchChk, 0, 0)
     vs.SetBelowItem(dlg, lMatchChk, lSpellChk, 0, 0)
     vs.SetBelowItem(dlg, lSpellChk, lSearchChk, 0, 0)
-    vs.SetBelowItem(dlg, lSearchChk, lJobChk, 0, 0)
+    vs.SetBelowItem(dlg, lSearchChk, lReplaceChk, 0, 0)
+    vs.SetBelowItem(dlg, lReplaceChk, lJobChk, 0, 0)
     vs.SetBelowItem(dlg, lJobChk, lSetupLbl, 0, 10)
     vs.SetBelowItem(dlg, lSetupLbl, lPrefsChk, 0, 0)
     vs.SetBelowItem(dlg, lPrefsChk, lPromptChk, 0, 0)
@@ -6710,6 +7094,7 @@ def ask_which_tools():
             vs.SetBooleanItem(dlg, lJobChk, False)
             vs.SetBooleanItem(dlg, lPrefsChk, False)
             vs.SetBooleanItem(dlg, lSearchChk, False)
+            vs.SetBooleanItem(dlg, lReplaceChk, False)
         elif item == kOK:
             picked = []
             # Fixed order, independent of which boxes the user ticked first.
@@ -6719,6 +7104,8 @@ def ask_which_tools():
                 picked.append(TOOL_PREFS)
             if vs.GetBooleanItem(dlg, lSearchChk):
                 picked.append(TOOL_SEARCH)
+            if vs.GetBooleanItem(dlg, lReplaceChk):
+                picked.append(TOOL_REPLACE)
             if vs.GetBooleanItem(dlg, lDumpChk):
                 picked.append(TOOL_DUMP)
             if vs.GetBooleanItem(dlg, lNormChk):
@@ -6753,6 +7140,7 @@ TOOL_RUNNERS = [
     (TOOL_JOB, 'Draw schematic job'),
     (TOOL_PREFS, 'Preferences'),
     (TOOL_SEARCH, 'Search'),
+    (TOOL_REPLACE, 'Find and Replace'),
 ]
 
 
@@ -6784,6 +7172,7 @@ def run_cc_tools():
         TOOL_JOB: tool_draw_job,
         TOOL_PREFS: tool_preferences,
         TOOL_SEARCH: tool_search,
+        TOOL_REPLACE: tool_find_replace,
     }
     names = dict((tool, name) for tool, name in TOOL_RUNNERS)
 
