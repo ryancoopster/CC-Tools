@@ -309,4 +309,68 @@ check('T11 ConnectedSkt is still synced',
       any(e['field'] == 'ConnectedSkt' and e['new'] == 'TRUNK - 25' for e in sync),
       repr([(e['field'], e['new']) for e in sync]))
 
+# ── T12: a device rename goes through ConnectCAD, not a raw field write ──
+# Renaming a device SEVERS its stale equipment association and re-forms the
+# correct one by name. SetRField writes the string and leaves the association
+# pointing at a rack item the device no longer matches -- a link the interface
+# would have broken, kept by script.
+def rename_doc():
+    return Doc([[
+        Obj('Device', {'name': 'AMP1', 'tag': 'AMP1'}),
+        equip('AMP1'),
+    ]])
+
+
+mod, vsm = load(rename_doc())
+hs = mod.walk_document()
+device = [h for h in hs if mod.classify(h) == 'device'][0]
+item = [h for h in hs if mod.classify(h) == 'equipment'][0]
+eds = [
+    mod.make_edit(device, 'device', 'name', 'AMP1', 'AMP 1', True),
+    mod.make_edit(item, 'equipment', 'name', 'AMP1', 'AMP 1', True),
+]
+vsm.cc_renames = []
+applied = mod.apply_edits(eds)
+
+check('T12 both renames applied', len(applied) == 2, repr(len(applied)))
+check('T12 the device went through CC_OnFindAndReplace',
+      any(h is device and f == 'name' for h, f, _v in vsm.cc_renames),
+      repr(vsm.cc_renames))
+check('T12 the equipment item did NOT',
+      not any(h is item for h, _f, _v in vsm.cc_renames),
+      'only name on a Device gets the smart path')
+check('T12 the name actually changed',
+      mod.read_field(device, 'name') == 'AMP 1')
+
+# Ordering: the equipment must be renamed BEFORE the device, or the re-form by
+# name finds nothing and the pair comes apart.
+order = [mod.edit_order(e) for e in eds]
+check('T12 equipment sorts before device', order == [1, 0], repr(order))
+seq = sorted(eds, key=mod.edit_order)
+check('T12 so equipment is written first', seq[0]['kind'] == 'equipment',
+      repr([e['kind'] for e in seq]))
+
+# Without a licence the routine is a silent no-op; the write must still land
+# and the run must SAY the association was not updated.
+mod2, vsm2 = load(rename_doc())
+vsm2.cc_rename_works = False
+hs2 = mod2.walk_document()
+d2 = [h for h in hs2 if mod2.classify(h) == 'device'][0]
+applied2 = mod2.apply_edits(
+    [mod2.make_edit(d2, 'device', 'name', 'AMP1', 'AMP 1', True)])
+check('T12 a no-op routine falls back to a plain write',
+      len(applied2) == 1 and mod2.read_field(d2, 'name') == 'AMP 1')
+check('T12 and the fallback is counted, not hidden',
+      mod2.apply_edits.fallback_renames == 1,
+      repr(mod2.apply_edits.fallback_renames))
+
+# A tag is not a link key and must never take the rename path.
+mod3, vsm3 = load(rename_doc())
+hs3 = mod3.walk_document()
+d3 = [h for h in hs3 if mod3.classify(h) == 'device'][0]
+vsm3.cc_renames = []
+mod3.apply_edits([mod3.make_edit(d3, 'device', 'tag', 'AMP1', 'AMP 1', False)])
+check('T12 a tag edit is a plain write', vsm3.cc_renames == [], repr(vsm3.cc_renames))
+check('T12 the tag still changed', mod3.read_field(d3, 'tag') == 'AMP 1')
+
 R.report_and_exit()

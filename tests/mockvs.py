@@ -259,6 +259,16 @@ def build_vs(doc, selected=()):
     def GetItemText(dlg, item):
         return state['text'].get(item, '')
 
+    # ConnectCAD's own rename. Tests set v.cc_rename_works to False to
+    # simulate a session with no ConnectCAD licence, where the real routine is
+    # a silent no-op.
+    def CC_OnFindAndReplace(h, field, value):
+        v.cc_renames.append((h, field, value))
+        if v.cc_rename_works:
+            rec = v.GetParametricRecord(h)
+            if rec:
+                v.SetRField(h, v.GetName(rec), field, value)
+
     # The general Open dialog, as Vectorworks' own Marionette node calls it:
     # ok, path = vs.GetFileN(title, defaultFolder, mask). Tests set
     # v.file_choice to what it should hand back; '' stands for a cancel.
@@ -289,6 +299,8 @@ def build_vs(doc, selected=()):
 
     v.file_choice = ''
     v.dialog_calls = []
+    v.cc_renames = []
+    v.cc_rename_works = True
     v.choices = {}
     v.classes = set()
     v.active_class = 'None'

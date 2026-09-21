@@ -789,6 +789,47 @@ def find_socket_collisions(edits, parents):
 
 
 # ─── Apply ───────────────────────────────────────────────────────────────────
+def rename_device(handle, field, value):
+    """Rename a Device through ConnectCAD's own path. True if it landed.
+
+    CC_OnFindAndReplace is the same code that runs when you type in the OIP
+    Name field. The difference that matters is not the string: renaming a
+    device SEVERS its stale equipment association and re-forms the correct one
+    by name. A plain SetRField writes the text and leaves the stored
+    association pointing at whatever rack item it used to match -- so a device
+    renamed by script kept a link the interface would have broken, and never
+    picked up the one it should have gained.
+
+    Only 'name' gets that path; every other field is a plain write, which is
+    why this is used for link-name edits alone.
+
+    It is a silent no-op without a ConnectCAD licence, so the value is read
+    back rather than assumed. Callers fall back to write_field."""
+    routine = cc_routine('CC_OnFindAndReplace')
+    if routine is None or not value:
+        return False
+    try:
+        routine(handle, field, value)
+    except Exception:
+        return False
+    return read_field(handle, field) == value
+
+
+def edit_order(edit):
+    """Sort key putting equipment renames before the devices that match them.
+
+    CC_OnFindAndReplace re-forms a device's equipment association BY NAME at
+    the moment of the rename. If the equipment item still holds the old name at
+    that point there is nothing to match, and the pair comes apart even though
+    both were being renamed to the same thing. Renaming the equipment first
+    means the device finds its partner already waiting."""
+    if edit['is_link_name'] and edit['kind'] == 'equipment':
+        return 0
+    if edit['is_link_name'] and edit['kind'] == 'device':
+        return 1
+    return 2
+
+
 def apply_edits(edits):
     """Write every planned edit, then reset every touched object.
 
@@ -798,8 +839,18 @@ def apply_edits(edits):
     its children could discard the child edits."""
     applied = []
     touched = []
-    for e in edits:
-        if write_field(e['handle'], e['field'], e['new']):
+    fell_back = 0
+    for e in sorted(edits, key=edit_order):
+        landed = False
+        if e['kind'] == 'device' and e['is_link_name']:
+            # ConnectCAD's own rename, so the equipment association is severed
+            # and re-formed rather than left stale.
+            landed = rename_device(e['handle'], e['field'], e['new'])
+            if not landed:
+                fell_back += 1
+        if not landed:
+            landed = write_field(e['handle'], e['field'], e['new'])
+        if landed:
             applied.append(e)
             if e['handle'] not in touched:
                 touched.append(e['handle'])
@@ -809,7 +860,17 @@ def apply_edits(edits):
     for handle in touched:
         if classify(handle) == 'socket':
             vs.ResetObject(handle)
+    if fell_back:
+        apply_edits.fallback_renames = fell_back
+    else:
+        apply_edits.fallback_renames = 0
     return applied
+
+
+# How many device renames could not use ConnectCAD's own path on the last run.
+# Read by the tools so a licence-less session says so rather than quietly
+# leaving every association stale.
+apply_edits.fallback_renames = 0
 
 
 def reset_circuits():
@@ -5150,6 +5211,16 @@ def tool_find_replace():
                      'renamed here')
         lines.append('             is now unlinked from its equipment item.')
     lines.append('Applied:     {}'.format(len(applied)))
+    if apply_edits.fallback_renames:
+        lines.append('')
+        lines.append('WARNING: {} device rename(s) could not use ConnectCAD\'s '
+                     'own rename path.'.format(apply_edits.fallback_renames))
+        lines.append('The names were written, but each device KEPT the rack '
+                     'equipment link it')
+        lines.append('had before and did not pick up one matching its new '
+                     'name. That path is a')
+        lines.append('no-op without a ConnectCAD licence. Re-link by hand, or '
+                     're-run with one.')
     lines.append('Circuits reset: {}'.format(reset))
     lines.append('')
     if duplicates:
