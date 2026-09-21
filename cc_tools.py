@@ -37,6 +37,11 @@ import time
 # ─── Configuration ───────────────────────────────────────────────────────────
 BASE_FOLDER = os.path.expanduser('~/Documents/CC Tools')
 
+# The running version. The update check compares this against the version
+# published in update.json at the top of the repository, so the two must be
+# bumped together -- tools/release.py does both and refuses to do one.
+CC_TOOLS_VERSION = '0.9.1'
+
 TYPE_GROUP = 11
 TYPE_PIO   = 86
 
@@ -4902,6 +4907,9 @@ PREF_DEFAULTS = {
     'circuit_stagger_inches': 0.5,  # how far apart parallel circuit elbows sit; 0 = off
     'circuit_type': '',         # '' = leave ConnectCAD's own default alone
     'label_symbol': '',         # '' = leave ConnectCAD's own default alone
+    # Off until the user is asked. Nothing reaches the network before that.
+    'check_for_updates': False,
+    'update_interval_days': 7.0,   # 0 = check on every launch
 }
 
 # Values ConnectCAD accepts for Circuit.CircuitType. There are exactly four,
@@ -4934,6 +4942,7 @@ PREF_RANGES = {
     'section_gap_inches': (0.0, 240.0),
     'device_gap_inches': (0.0, 240.0),
     'circuit_stagger_inches': (0.0, 48.0),
+    'update_interval_days': (0.0, 365.0),
 }
 
 
@@ -6198,6 +6207,7 @@ pElbowLbl, pElbowEdit = 617, 618
 pTypeLbl, pTypePopup = 610, 611
 pLabelLbl, pLabelEdit = 612, 613
 pNote = 614
+pUpdChk, pUpdLbl, pUpdPop, pUpdState = 619, 620, 621, 622
 
 
 def read_number(dialog, item, current, key):
@@ -6244,6 +6254,11 @@ def tool_preferences():
     vs.CreateStaticText(dialog, pLabelLbl, 'Device label symbol:', -1)
     vs.CreateEditText(dialog, pLabelEdit, prefs['label_symbol'], 22)
 
+    vs.CreateCheckBox(dialog, pUpdChk, 'Check GitHub for CC Tools updates')
+    vs.CreateStaticText(dialog, pUpdLbl, 'How often:', -1)
+    vs.CreatePullDownMenu(dialog, pUpdPop, 18)
+    vs.CreateStaticText(dialog, pUpdState, update_status_line().ljust(72), -1)
+
     vs.CreateStaticText(
         dialog, pNote,
         'Spacing is in printed inches and is scaled by the layer, so a job\n'
@@ -6265,7 +6280,11 @@ def tool_preferences():
     vs.SetRightItem(dialog, pTypeLbl, pTypePopup, 0, 0)
     vs.SetBelowItem(dialog, pTypeLbl, pLabelLbl, 0, 0)
     vs.SetRightItem(dialog, pLabelLbl, pLabelEdit, 0, 0)
-    vs.SetBelowItem(dialog, pLabelLbl, pNote, 0, 10)
+    vs.SetBelowItem(dialog, pLabelLbl, pUpdChk, 0, 12)
+    vs.SetBelowItem(dialog, pUpdChk, pUpdLbl, 0, 4)
+    vs.SetRightItem(dialog, pUpdLbl, pUpdPop, 4, 0)
+    vs.SetBelowItem(dialog, pUpdLbl, pUpdState, 0, 6)
+    vs.SetBelowItem(dialog, pUpdState, pNote, 0, 10)
 
     def handler(item, data):
         if item == kSetup:
@@ -6275,6 +6294,13 @@ def tool_preferences():
             current = prefs.get('circuit_type', '')
             index = CIRCUIT_TYPES.index(current) if current in CIRCUIT_TYPES else 0
             vs.SelectChoice(dialog, pTypePopup, index, True)
+            for position, (label, _) in enumerate(UPDATE_INTERVALS):
+                vs.AddChoice(dialog, pUpdPop, label, position)
+            vs.SelectChoice(dialog, pUpdPop,
+                            nearest_interval_index(
+                                prefs.get('update_interval_days')), True)
+            vs.SetBooleanItem(dialog, pUpdChk,
+                              bool(prefs.get('check_for_updates')))
         elif item == kOK:
             picked = vs.GetSelectedChoiceIndex(dialog, pTypePopup, 0)
             chosen.update({
@@ -6295,6 +6321,9 @@ def tool_preferences():
                 'circuit_type': (CIRCUIT_TYPES[picked]
                                  if 0 <= picked < len(CIRCUIT_TYPES) else ''),
                 'label_symbol': (vs.GetItemText(dialog, pLabelEdit) or '').strip(),
+                'check_for_updates': bool(vs.GetBooleanItem(dialog, pUpdChk)),
+                'update_interval_days': read_interval(dialog, pUpdPop,
+                                                      prefs),
             })
 
     if vs.RunLayoutDialog(dialog, handler) != kOK or not chosen:
@@ -6304,6 +6333,13 @@ def tool_preferences():
     if path is None:
         vs.AlrtDialog('Could not write preferences to:\n{}'.format(prefs_path()))
         return 'stopped', 'preferences could not be saved'
+
+    # Answering the question here counts as answering it, either way, so the
+    # first-run consent dialog does not appear afterwards asking again.
+    state = load_update_state()
+    if not state.get('consent_asked'):
+        state['consent_asked'] = True
+        save_update_state(state)
 
     summary = ('columns {:g}"  rows {:g}"  section gap {:g}"'.format(
         chosen['column_inches'], chosen['row_inches'],
@@ -8007,6 +8043,598 @@ def copy_job_spec():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# UPDATES
+# ═══════════════════════════════════════════════════════════════════════════
+# CC Tools can check its own public repository for a newer version. Three
+# things about this installation shaped the design, all read off the machine
+# rather than assumed:
+#
+#  1. THERE IS NO WAY TO RELOAD A PLUG-IN'S CODE IN A RUNNING SESSION.
+#     ReloadPlugin, RefreshPlugin, RegisterPlugin, SetPluginScript and five
+#     other spellings return zero hits across the 205MB application binary and
+#     all 128 library bundles, and Vectorworks' own Plug-in Manager says
+#     "Installing new plug-ins require restart of Vectorworks". So an update
+#     can never take effect in the run that downloaded it.
+#
+#  2. WHICH IS WHY THIS FILE IS A PAYLOAD. What the user pastes into the
+#     Plug-in Manager is the small loader stub in tools/stub.py, which reads
+#     this file and execs it. Updating is then one os.replace() of a plain
+#     .py, which takes effect on the next menu click -- no restart, no admin
+#     rights, no byte-patching the .vsm container, and nothing written near
+#     the signed application bundle. Pasted whole rather than loaded from a
+#     file, everything below still runs, but there is no file to replace and
+#     the updater says so instead of writing one nothing will load.
+#
+#  3. vs.InstallCertificate() MUST NOT BE USED, even though Vectorworks' own
+#     shipped uploaders (ExportWebGl, OBJExporter) call it. The bootstrap
+#     embedded in the main binary shows what it actually does: when
+#     PYTHONHTTPSVERIFY is unset it sets
+#         ssl._create_default_https_context = ssl._create_unverified_context
+#     It makes HTTPS work by turning certificate verification OFF. For a file
+#     we download and then execute, that is the entire attack. We build a
+#     verifying context from a real CA bundle instead, and fail closed.
+
+UPDATE_REPO = 'ryancoopster/CC-Tools'
+UPDATE_BRANCH = 'main'
+
+# Both URLs are constants HERE, and the manifest deliberately cannot carry the
+# payload URL. A manifest that could name its own download location would turn
+# a completeness check into a redirect-to-anywhere.
+UPDATE_MANIFEST_URL = ('https://raw.githubusercontent.com/{}/{}/update.json'
+                       .format(UPDATE_REPO, UPDATE_BRANCH))
+UPDATE_PAYLOAD_URL = ('https://raw.githubusercontent.com/{}/{}/cc_tools.py'
+                      .format(UPDATE_REPO, UPDATE_BRANCH))
+
+UPDATE_STATE_FILE = 'update_state.json'
+UPDATE_TIMEOUT = 2.5          # the manifest is ~300 bytes; this is generous
+UPDATE_DOWNLOAD_TIMEOUT = 30.0
+UPDATE_MAX_BYTES = 4 * 1024 * 1024
+
+# macOS's own bundle, which is current. certifi ships inside Vectorworks but
+# its roots are from 2021, so it is only ever the fallback.
+CA_BUNDLES = ('/etc/ssl/cert.pem', '/usr/local/etc/openssl/cert.pem')
+
+
+def ssl_context():
+    """A verifying SSL context, or None if no usable CA bundle exists.
+
+    An explicit bundle is not optional here. The bundled OpenSSL's compiled-in
+    OPENSSLDIR is /Library/Frameworks/Python.framework/Versions/3.9/etc/openssl,
+    a leftover from the python.org build that does not exist in this install,
+    and ssl.py has no macOS keychain fallback -- so a default context loads
+    ZERO roots and every HTTPS request dies with CERTIFICATE_VERIFY_FAILED.
+    """
+    import ssl
+    candidates = list(CA_BUNDLES)
+    try:
+        import certifi
+        candidates.append(certifi.where())
+    except Exception:
+        pass
+    for path in candidates:
+        try:
+            if not path or not os.path.exists(path):
+                continue
+            context = ssl.create_default_context(cafile=path)
+            if context.get_ca_certs():
+                return context
+        except Exception:
+            continue
+    return None
+
+
+def fetch_url(url, timeout=UPDATE_TIMEOUT, limit=UPDATE_MAX_BYTES):
+    """GET over verified HTTPS. Returns (bytes, error). Never raises."""
+    if not url.startswith('https://'):
+        return None, 'refusing a URL that is not HTTPS'
+    context = ssl_context()
+    if context is None:
+        return None, ('no certificate authority bundle was found, so a '
+                      'download could not be verified')
+    try:
+        import urllib.request
+        request = urllib.request.Request(
+            url, headers={'User-Agent': 'CC-Tools/' + CC_TOOLS_VERSION})
+        response = urllib.request.urlopen(request, timeout=timeout,
+                                          context=context)
+        try:
+            data = response.read(limit + 1)
+        finally:
+            response.close()
+    except Exception as err:
+        return None, '{}: {}'.format(type(err).__name__, err)
+    if len(data) > limit:
+        return None, 'the download is larger than {} bytes'.format(limit)
+    return data, ''
+
+
+def version_tuple(text):
+    """'0.9.15' -> (0, 9, 15). Anything unparseable in a part sorts lowest."""
+    parts = []
+    for chunk in str(text or '').strip().split('.'):
+        digits = ''.join(ch for ch in chunk if ch.isdigit())
+        parts.append(int(digits) if digits else 0)
+    return tuple(parts) if parts else (0,)
+
+
+def is_newer(candidate, current):
+    """Whether `candidate` is a later version than `current`."""
+    left, right = version_tuple(candidate), version_tuple(current)
+    width = max(len(left), len(right))
+    left = left + (0,) * (width - len(left))
+    right = right + (0,) * (width - len(right))
+    return left > right
+
+
+def update_state_path():
+    return os.path.join(BASE_FOLDER, UPDATE_STATE_FILE)
+
+
+UPDATE_STATE_DEFAULTS = {
+    'last_check': 0.0,
+    'last_version_seen': '',
+    'skipped_version': '',
+    'failures': 0,
+    'last_error': '',
+    'consent_asked': False,
+}
+
+
+def load_update_state():
+    """The updater's own bookkeeping.
+
+    Deliberately NOT in preferences.json: save_prefs rewrites that file from
+    PREF_DEFAULTS keys alone, so any extra key there is silently destroyed the
+    next time preferences are saved.
+    """
+    import json
+    state = dict(UPDATE_STATE_DEFAULTS)
+    try:
+        with open(update_state_path(), 'r', encoding='utf-8') as handle:
+            stored = json.load(handle)
+    except Exception:
+        return state
+    if not isinstance(stored, dict):
+        return state
+    for key, default in UPDATE_STATE_DEFAULTS.items():
+        if key not in stored:
+            continue
+        value = stored[key]
+        try:
+            if isinstance(default, bool):
+                if isinstance(value, bool):
+                    state[key] = value
+            elif isinstance(default, float):
+                state[key] = float(value)
+            elif isinstance(default, int):
+                state[key] = int(value)
+            elif isinstance(value, str):
+                state[key] = value
+        except (TypeError, ValueError):
+            continue
+    return state
+
+
+def save_update_state(state):
+    """Write the bookkeeping. Returns True on success; failure is not fatal."""
+    import json
+    try:
+        os.makedirs(BASE_FOLDER, exist_ok=True)
+        with open(update_state_path(), 'w', encoding='utf-8') as handle:
+            json.dump(dict((k, state.get(k, v))
+                           for k, v in UPDATE_STATE_DEFAULTS.items()),
+                      handle, indent=2)
+        return True
+    except Exception:
+        return False
+
+
+def update_check_due(state, prefs, now):
+    """Whether enough time has passed to check again."""
+    if not prefs.get('check_for_updates'):
+        return False
+    try:
+        interval = float(prefs.get('update_interval_days') or 0.0)
+    except (TypeError, ValueError):
+        interval = 7.0
+    # Two failures running means something is wrong with the network rather
+    # than with us. Back off to a day whatever the interval says, so a captive
+    # portal cannot make every single launch pay the timeout.
+    if int(state.get('failures') or 0) >= 2:
+        interval = max(interval, 1.0)
+    if interval <= 0:
+        return True
+    last = float(state.get('last_check') or 0.0)
+    # Never checked. Saying "due" explicitly rather than letting the interval
+    # arithmetic decide it -- (now - 0) happens to exceed any interval with a
+    # real clock, but that is a coincidence of the epoch, not a rule.
+    if last <= 0:
+        return True
+    # A clock that has gone backwards (or a hand-edited file) must not park the
+    # check permanently in the future.
+    if last > now:
+        return True
+    return (now - last) >= interval * 86400.0
+
+
+def fetch_manifest():
+    """The published version record. Returns (manifest, error)."""
+    import json
+    data, error = fetch_url(UPDATE_MANIFEST_URL)
+    if error:
+        return None, error
+    try:
+        manifest = json.loads(data.decode('utf-8'))
+    except Exception as err:
+        return None, 'the version file did not parse ({})'.format(err)
+    if not isinstance(manifest, dict):
+        return None, 'the version file is not a JSON object'
+    version = str(manifest.get('version') or '').strip()
+    if not version:
+        return None, 'the version file names no version'
+    manifest['version'] = version
+    notes = manifest.get('notes')
+    manifest['notes'] = ([str(n) for n in notes]
+                         if isinstance(notes, list) else [])
+    return manifest, ''
+
+
+def download_update(manifest):
+    """Fetch and validate the new payload. Returns (source_text, error).
+
+    Three independent checks, because what comes back is about to be executed:
+    the byte count and the SHA-256 the manifest published, and whether it
+    compiles at all. A truncated download fails all three, and a substituted
+    one fails the checksum.
+    """
+    import hashlib
+    expected_hash = str(manifest.get('sha256') or '').strip().lower()
+    if len(expected_hash) != 64:
+        return None, ('the version file publishes no usable checksum, so a '
+                      'download could not be verified')
+
+    data, error = fetch_url(UPDATE_PAYLOAD_URL,
+                            timeout=UPDATE_DOWNLOAD_TIMEOUT)
+    if error:
+        return None, error
+
+    expected_bytes = manifest.get('bytes')
+    if isinstance(expected_bytes, int) and len(data) != expected_bytes:
+        return None, ('the download is {:,} bytes but the version file '
+                      'expects {:,}'.format(len(data), expected_bytes))
+
+    if hashlib.sha256(data).hexdigest() != expected_hash:
+        return None, 'the download does not match its published checksum'
+
+    try:
+        source = data.decode('utf-8')
+    except Exception as err:
+        return None, 'the download is not valid UTF-8 ({})'.format(err)
+    try:
+        compile(source, 'cc_tools.py', 'exec')
+    except SyntaxError as err:
+        return None, 'the download does not compile (line {})'.format(
+            err.lineno)
+    except Exception as err:
+        return None, 'the download would not compile ({})'.format(err)
+    return source, ''
+
+
+def payload_path():
+    """The file this code was loaded from, or '' if it was pasted whole.
+
+    The loader stub sets CC_TOOLS_PAYLOAD in the namespace it execs into.
+    """
+    value = globals().get('CC_TOOLS_PAYLOAD') or ''
+    return value if isinstance(value, str) else ''
+
+
+def install_update(source):
+    """Put the new payload in place. Returns (ok, detail).
+
+    The live file is never truncated. This writes a sibling, flushes it to
+    disk, keeps a copy of what was there, and then renames over the top:
+    os.replace is atomic, so the file nothing has loaded yet is either wholly
+    the old version or wholly the new one, never a half-written one that will
+    not load.
+    """
+    target = payload_path()
+    if not target:
+        return False, ('this copy was pasted straight into the Plug-in '
+                       'Manager rather than loaded from a file, so there is '
+                       'no payload to replace')
+    if not os.path.isfile(target):
+        return False, '{} is missing'.format(target)
+
+    temporary = target + '.new'
+    backup = target + '.previous'
+    try:
+        with open(temporary, 'w', encoding='utf-8', newline='\n') as handle:
+            handle.write(source)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except Exception as err:
+        try:
+            if os.path.exists(temporary):
+                os.remove(temporary)
+        except Exception:
+            pass
+        return False, 'could not write {}: {}'.format(temporary, err)
+
+    # Best effort: an update that works but could not be backed up is better
+    # than no update, and the repository is the real backup.
+    kept = ''
+    try:
+        with open(target, 'r', encoding='utf-8') as handle:
+            previous = handle.read()
+        with open(backup, 'w', encoding='utf-8', newline='\n') as handle:
+            handle.write(previous)
+        kept = backup
+    except Exception:
+        kept = ''
+
+    try:
+        os.replace(temporary, target)
+    except Exception as err:
+        try:
+            if os.path.exists(temporary):
+                os.remove(temporary)
+        except Exception:
+            pass
+        return False, 'could not replace {}: {}'.format(target, err)
+    return True, kept
+
+
+def update_notes_text(manifest, limit=14):
+    """The release notes, as lines. Says so plainly when there are none."""
+    notes = manifest.get('notes') or []
+    if not notes:
+        return ['No release notes were published with this version.']
+    lines = [str(note) for note in notes[:limit]]
+    if len(notes) > limit:
+        lines.append('... and {} more'.format(len(notes) - limit))
+    return lines
+
+
+def update_prompt_advice(manifest):
+    """What the update dialog says under its question."""
+    lines = ["What's new:"]
+    lines.extend('  - ' + note for note in update_notes_text(manifest))
+    lines.append('')
+    target = payload_path()
+    lines.append('Installs to:  {}'.format(target or '(no payload file)'))
+    lines.append('')
+    lines.append('It takes effect the next time you pick CC Tools from the '
+                 'menu, not in this run.')
+    return '\n'.join(lines)
+
+
+def read_interval(dialog, item, prefs):
+    """The interval a pulldown is showing, in days."""
+    index = vs.GetSelectedChoiceIndex(dialog, item, 0)
+    if not isinstance(index, int) or not (0 <= index < len(UPDATE_INTERVALS)):
+        index = nearest_interval_index(prefs.get('update_interval_days'))
+    return UPDATE_INTERVALS[index][1]
+
+
+def update_status_line():
+    """One line on where the update check stands, for the Preferences dialog.
+
+    A check that silently fails behind a corporate proxy would otherwise be
+    invisible: the drafter is deliberately never alerted, so the reason has to
+    be discoverable somewhere. This is where.
+    """
+    import time as _time
+    state = load_update_state()
+    parts = ['Version {}'.format(CC_TOOLS_VERSION)]
+    last = float(state.get('last_check') or 0.0)
+    if last <= 0:
+        parts.append('never checked')
+    else:
+        try:
+            parts.append('last checked {}'.format(
+                _time.strftime('%Y-%m-%d %H:%M', _time.localtime(last))))
+        except Exception:
+            parts.append('last checked at an unreadable time')
+    if state.get('last_error'):
+        parts.append('last attempt failed: {}'.format(state['last_error'])[:90])
+    elif state.get('skipped_version'):
+        parts.append('skipping {}'.format(state['skipped_version']))
+    return '.  '.join(parts)
+
+
+# Interval choices offered in the consent dialog and in Preferences, as
+# (label, days). 0 means every launch.
+UPDATE_INTERVALS = (
+    ('Every launch', 0.0),
+    ('Once a day', 1.0),
+    ('Once a week', 7.0),
+    ('Once a month', 30.0),
+)
+
+uConsentTxt, uConsentChk, uConsentLbl, uConsentPop = 340, 341, 342, 343
+
+
+def nearest_interval_index(days):
+    """The offered interval closest to a stored value.
+
+    preferences.json is edited by hand, so the stored value may be 10 days
+    and match nothing in the list. Snapping to the nearest is better than
+    silently resetting someone's choice to the default.
+    """
+    try:
+        value = float(days)
+    except (TypeError, ValueError):
+        value = 7.0
+    best, distance = 0, None
+    for index, (_, option) in enumerate(UPDATE_INTERVALS):
+        gap = abs(option - value)
+        if distance is None or gap < distance:
+            best, distance = index, gap
+    return best
+
+
+def ask_update_consent(prefs):
+    """First run only: may we check, and how often?
+
+    Returns (answered, prefs). `answered` False means the user backed out, so
+    nothing is stored and the question is asked again next time -- which is
+    the honest reading of closing a consent dialog.
+    """
+    dialog = vs.CreateLayout('CC Tools Updates', False, 'Save', 'Not now')
+    vs.CreateStaticText(
+        dialog, uConsentTxt,
+        'CC Tools can check its public GitHub repository for a new version\n'
+        'when it starts.\n\n'
+        'It fetches one small file and sends nothing about you, your drawings\n'
+        'or your work. Nothing is ever installed without asking you first.\n\n'
+        'You can change this at any time in CC Tools > Preferences.', -1)
+    vs.CreateCheckBox(dialog, uConsentChk, 'Check GitHub for updates')
+    vs.CreateStaticText(dialog, uConsentLbl, 'How often:', -1)
+    vs.CreatePullDownMenu(dialog, uConsentPop, 18)
+
+    vs.SetFirstLayoutItem(dialog, uConsentTxt)
+    vs.SetBelowItem(dialog, uConsentTxt, uConsentChk, 0, 12)
+    vs.SetBelowItem(dialog, uConsentChk, uConsentLbl, 0, 8)
+    vs.SetRightItem(dialog, uConsentLbl, uConsentPop, 4, 0)
+
+    chosen = {}
+
+    def handler(item, data):
+        if item == kSetup:
+            for position, (label, _) in enumerate(UPDATE_INTERVALS):
+                vs.AddChoice(dialog, uConsentPop, label, position)
+            vs.SetBooleanItem(dialog, uConsentChk, True)
+            vs.SelectChoice(dialog, uConsentPop,
+                            nearest_interval_index(
+                                prefs.get('update_interval_days')), True)
+        elif item == kOK:
+            chosen['on'] = bool(vs.GetBooleanItem(dialog, uConsentChk))
+            index = vs.GetSelectedChoiceIndex(dialog, uConsentPop, 0)
+            if not isinstance(index, int) or not (
+                    0 <= index < len(UPDATE_INTERVALS)):
+                index = nearest_interval_index(
+                    prefs.get('update_interval_days'))
+            chosen['days'] = UPDATE_INTERVALS[index][1]
+
+    if vs.RunLayoutDialog(dialog, handler) != 1 or 'on' not in chosen:
+        return False, prefs
+
+    prefs = dict(prefs)
+    prefs['check_for_updates'] = chosen['on']
+    prefs['update_interval_days'] = chosen['days']
+    save_prefs(prefs)
+    return True, prefs
+
+
+# AlertQuestion's button mapping is assumed, not confirmed: 1 for the first
+# button, 0 for the second, 2 and 3 for the custom pair. Only an explicit 1
+# installs anything -- any other answer, including one from a mapping that
+# turns out to differ, leaves the drawing and the payload alone. That is the
+# safe direction for the error to fall.
+UPDATE_ANSWER_NOW = 1
+UPDATE_ANSWER_SKIP = 0
+UPDATE_ANSWER_LATER = 2
+
+
+def offer_update(manifest, state):
+    """Show the release notes and ask. Returns (installed, status, state)."""
+    answer = vs.AlertQuestion(
+        'CC Tools {} is available. You have {}.'.format(
+            manifest['version'], CC_TOOLS_VERSION),
+        update_prompt_advice(manifest),
+        0,
+        'Update now', 'Skip this version', 'Ask me later', '')
+
+    state = dict(state)
+    if answer == UPDATE_ANSWER_SKIP:
+        # Remembered per version, so the next release still asks.
+        state['skipped_version'] = manifest['version']
+        return False, 'Skipped {}.'.format(manifest['version']), state
+    if answer != UPDATE_ANSWER_NOW:
+        state['skipped_version'] = ''
+        # Deliberately does NOT advance last_check, so "ask me later" means
+        # the next launch, not the next interval.
+        return False, 'Update postponed.', state
+
+    source, error = download_update(manifest)
+    if error:
+        state['last_error'] = error
+        return False, 'Could not download {}: {}'.format(
+            manifest['version'], error), state
+
+    ok, detail = install_update(source)
+    if not ok:
+        state['last_error'] = detail
+        return False, 'Could not install {}: {}'.format(
+            manifest['version'], detail), state
+
+    state['skipped_version'] = ''
+    state['last_error'] = ''
+    kept = '\nThe previous version is kept at {}'.format(detail) if detail else ''
+    return True, ('Updated to {}.\n\nPick CC Tools from the menu again to '
+                  'use it.{}'.format(manifest['version'], kept)), state
+
+
+def run_update_check(force=False):
+    """Check for a new version, and install it if the user says so.
+
+    Returns (installed, status). Called BEFORE the launcher and before any
+    tool touches the drawing, so an update can never land mid-edit.
+
+    Every failure is silent unless the user asked for the check by hand. A
+    drafter who is offline, on a captive portal, or behind a TLS-inspecting
+    proxy at a client site must never be blocked or nagged by a check they
+    did not request.
+    """
+    import time as _time
+    prefs = load_prefs()
+    state = load_update_state()
+
+    if not force:
+        if not state.get('consent_asked'):
+            answered, prefs = ask_update_consent(prefs)
+            if answered:
+                state['consent_asked'] = True
+                save_update_state(state)
+            else:
+                return False, ''
+        if not update_check_due(state, prefs, _time.time()):
+            return False, ''
+
+    manifest, error = fetch_manifest()
+    now = _time.time()
+    if error:
+        state['failures'] = int(state.get('failures') or 0) + 1
+        state['last_error'] = error
+        state['last_check'] = now
+        save_update_state(state)
+        return False, ('Could not check for updates: {}'.format(error)
+                       if force else '')
+
+    state['failures'] = 0
+    state['last_error'] = ''
+    state['last_check'] = now
+    state['last_version_seen'] = manifest['version']
+
+    if not is_newer(manifest['version'], CC_TOOLS_VERSION):
+        save_update_state(state)
+        return False, ('CC Tools {} is the latest version.'.format(
+            CC_TOOLS_VERSION) if force else '')
+
+    # A skip is remembered until a version newer than the skipped one appears,
+    # but asking by hand overrides it -- otherwise a skip would be permanent
+    # with no way back short of editing a file.
+    if not force and state.get('skipped_version') == manifest['version']:
+        save_update_state(state)
+        return False, ''
+
+    installed, status, state = offer_update(manifest, state)
+    save_update_state(state)
+    return installed, status
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # LAUNCHER
 # ═══════════════════════════════════════════════════════════════════════════
 lToolLbl = 304
@@ -8018,6 +8646,7 @@ lPrefsChk, lSetupLbl = 315, 316
 lSearchChk, lReplaceChk, lReconChk = 317, 318, 319
 lOrderTxt, lHintTxt = 308, 309
 lSpecBtn, lSpecTxt = 320, 321
+lUpdBtn = 322
 
 
 def ask_which_tools():
@@ -8059,6 +8688,7 @@ def ask_which_tools():
     # Starting a schematic begins outside Vectorworks, in a Claude chat, and
     # the spec is a 30k-character file nobody wants to go and find.
     vs.CreatePushButton(dlg, lSpecBtn, 'Copy JOB-SPEC.md for Claude')
+    vs.CreatePushButton(dlg, lUpdBtn, 'Check for updates')
     vs.CreateStaticText(
         dlg, lSpecTxt,
         'Puts the spec on the clipboard to paste into a new chat.'.ljust(78),
@@ -8081,6 +8711,7 @@ def ask_which_tools():
     vs.SetBelowItem(dlg, lProbeChk, lOrderTxt, 0, 10)
     vs.SetBelowItem(dlg, lOrderTxt, lHintTxt, 0, 8)
     vs.SetBelowItem(dlg, lHintTxt, lSpecBtn, 0, 12)
+    vs.SetRightItem(dlg, lSpecBtn, lUpdBtn, 6, 0)
     vs.SetBelowItem(dlg, lSpecBtn, lSpecTxt, 0, 4)
 
     def handler(item, data):
@@ -8100,6 +8731,13 @@ def ask_which_tools():
             vs.SetBooleanItem(dlg, lSearchChk, False)
             vs.SetBooleanItem(dlg, lReplaceChk, False)
             vs.SetBooleanItem(dlg, lReconChk, False)
+        elif item == lUpdBtn:
+            # Asking by hand overrides both the interval and an earlier skip:
+            # a button labelled "Check for updates" that quietly did nothing
+            # because a timer had not elapsed would be a lie.
+            installed, status = run_update_check(force=True)
+            vs.SetItemText(dlg, lSpecTxt,
+                           status or 'No update information was available.')
         elif item == lSpecBtn:
             # A push button reports and leaves the dialog open, so the result
             # goes to the line under it rather than to an alert the user would
@@ -8167,6 +8805,15 @@ def run_cc_tools():
                      mid-run error). The chain HALTS: whatever tripped it needs
                      looking at before another tool touches the same drawing.
     """
+    # Before the launcher, so an update can never land in the middle of an
+    # edit. An installed update ends the run: the new code is on disk but this
+    # interpreter is still holding the old one, and there is no way to reload
+    # it -- so carrying on would run the version the user just replaced.
+    installed, status = run_update_check()
+    if installed:
+        vs.AlrtDialog(status)
+        return
+
     tools = ask_which_tools()
     if tools is None:
         return

@@ -1,0 +1,12 @@
+{
+  "version": "0.9.1",
+  "bytes": 377813,
+  "sha256": "3e2d2e4d3981fdfc107787766c054764c6cf63aa8fc667f7d5d056f5e2e58c6a",
+  "min_stub": 1,
+  "notes": [
+    "Checks GitHub for updates, with an interval you choose and release notes before you install",
+    "Copy JOB-SPEC.md to the clipboard from the launcher",
+    "Merge device-database entries whose make and model collide, keeping the fuller socket list",
+    "Docs: the alignment premise is gone, and the beta/backup caution is where you see it before installing"
+  ]
+}

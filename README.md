@@ -160,13 +160,50 @@ use.** If a drawing matters, back it up before pointing this at it.
 
 ## Install
 
-1. In Vectorworks: **Tools ▸ Plug-ins ▸ Plug-in Manager…**
-2. **New… ▸ Command**, name it `CC Tools`, set language to **Python**.
-3. **Edit Script…**, paste the entire contents of [`cc_tools.py`](cc_tools.py), then save.
-   Include the final `run_cc_tools()` line — that call is what actually runs the command.
-4. Add it to your workspace: **Tools ▸ Workspaces ▸ Edit Current Workspace ▸ Menus**, and drag **CC Tools** into a menu.
+You paste a small **loader** once. After that the plug-in updates itself and the
+Plug-in Manager never needs opening again.
 
-No dependencies, no files to install alongside it. The whole plug-in is that one script.
+1. Make the folder `~/Documents/CC Tools/app/` and save
+   [`cc_tools.py`](cc_tools.py) into it. That file is the plug-in.
+2. In Vectorworks: **Tools ▸ Plug-ins ▸ Plug-in Manager…**
+3. **New… ▸ Command**, name it `CC Tools`, set language to **Python**.
+4. **Edit Script…**, paste the entire contents of [`tools/stub.py`](tools/stub.py)
+   — the loader, about 80 lines, *not* `cc_tools.py` — then save.
+5. Add it to your workspace: **Tools ▸ Workspaces ▸ Edit Current Workspace ▸
+   Menus**, and drag **CC Tools** into a menu.
+
+No dependencies. Two files: the loader inside Vectorworks, and the program in
+`~/Documents/CC Tools/app/`.
+
+### Why a loader and not just the script
+
+Vectorworks cannot reload a plug-in's code in a running session. There is no
+API for it — `ReloadPlugin`, `RegisterPlugin`, `SetPluginScript` and six other
+spellings return nothing across the application binary and all 128 of its
+library bundles — and its own Plug-in Manager says installing a plug-in needs a
+restart.
+
+So if the code lived inside the plug-in, every update would mean quitting
+Vectorworks. Keeping it in a plain file means an update is one file replaced,
+and it takes effect the next time you pick **CC Tools** from the menu.
+
+If that file is ever broken or missing the loader says so plainly, and falls
+back to the previous version if one is there.
+
+### Updating
+
+The first run asks whether CC Tools may check GitHub for new versions, and how
+often. Nothing reaches the network until you answer, and **Never** means never.
+
+When there is a new version you get the release notes and three choices:
+**Update now**, **Skip this version**, or **Ask me later**. There is also a
+**Check for updates** button at the bottom of the launcher, which ignores both
+the interval and anything you skipped.
+
+Downloads are verified before they are installed — byte count, SHA-256, and
+whether the file compiles — and the version being replaced is kept alongside
+as `cc_tools.py.previous`. Both settings live in **Preferences**, which also
+shows when the last check ran and why it failed if it did.
 
 ## Using it
 
