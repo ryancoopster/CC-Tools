@@ -59,6 +59,9 @@ PCONN_SOCKET_FIELDS = ['ConnectedSkt']
 # A real drawing was found carrying the socket name in SocketName/DisplayTag
 # with ConnectedSkt empty, so syncing only ConnectedSkt left every panel
 # connector pointing at a socket name that no longer existed.
+# Device-External names its off-page endpoint in the TAG, never in 'name',
+# which is always the literal '<EXT>'.
+EXTERNAL_TEXT_FIELDS = ['tag', 'extname', 'DisplayTag', 'Display Tag']
 PCONN_OWN_SOCKET_FIELDS = ['SocketName', 'Socket Name']
 PCONN_OWN_TAG_FIELDS = ['DisplayTag', 'Display Tag']
 
@@ -206,7 +209,14 @@ def classify(handle):
         return None
 
     if pio.startswith('device-external') or 'external' in pio:
-        return None
+        # NOT a device: its 'name' really is the literal '<EXT>' sentinel and
+        # must never be renamed. But its TAG carries the off-page endpoint's
+        # label -- 'To SWTCH 2.01 2nd Floor Pri' -- which is free text someone
+        # typed, and returning None here hid it from Search, Spell Check and
+        # Find and Replace alike. A rename pass would update every Device,
+        # Socket, EquipItem and PanelConnector and leave these reading the old
+        # name.
+        return 'external'
     if pio == 'device' or 'deviceobj' in pio:
         return 'device'
     if pio == 'equipitem' or 'equipitem' in pio or 'equipmentitem' in pio:
@@ -548,6 +558,24 @@ def owning_panel_device(handle, parents):
     return ''
 
 
+def follow_device_reference(value, name_map, tag_map):
+    """What a reference holding `value` should become, or '' if unchanged.
+
+    A PanelConnector's ConnectedDev and a PanelLayout's DeviceName can hold
+    either a device's name or its tag. Names are consulted first: a value that
+    IS a device name means that device, whatever else it may coincidentally
+    equal. Only then is it read as a tag."""
+    if is_unnamed(value):
+        return ''
+    if value in name_map and name_map[value] != value:
+        return name_map[value]
+    # A value that is still a live device name must not be reinterpreted as
+    # somebody's tag.
+    if value in tag_map and value not in device_names_in_document():
+        return tag_map[value]
+    return ''
+
+
 def plan_link_sync(edits, parents):
     """Find partner objects that must follow a rename to preserve their link.
 
@@ -564,11 +592,20 @@ def plan_link_sync(edits, parents):
     document = walk_document()
     device_map = link_name_map(edits, 'device')
     equip_map = link_name_map(edits, 'equipment')
+    # PanelConnector.ConnectedDev and PanelLayout.DeviceName can hold a
+    # device's TAG rather than its name, so a tag rename leaves them pointing
+    # at a label that no longer exists. Tag edits are not link-name edits --
+    # the tag is not the key -- but they are still followed here.
+    device_tag_map = dict(
+        (e['old'], e['new']) for e in edits
+        if e['kind'] == 'device' and not e['is_link_name']
+        and not is_unnamed(e['old']) and not is_unnamed(e['new'])
+        and e['old'] != e['new'])
     socket_map = socket_rename_map(edits, parents)
     plain_socket_map = unambiguous_socket_map(edits, document)
 
     if not device_map and not equip_map and not socket_map \
-            and not plain_socket_map:
+            and not plain_socket_map and not device_tag_map:
         return [], True
 
     sync_edits = []
@@ -684,16 +721,18 @@ def plan_link_sync(edits, parents):
                         make_edit(h, 'equipment', field, old,
                                   full_device_map[old], True))
 
-        elif kind == 'panel' and full_device_map:
+        elif kind == 'panel' and (full_device_map or device_tag_map):
             field = resolve_field(h, PANEL_DEVICE_FIELDS)
             if field:
                 old = read_field(h, field)
-                if not is_unnamed(old) and old in full_device_map \
-                        and full_device_map[old] != old:
+                # Names first: a value that is a device NAME means that device,
+                # whatever else it might coincidentally equal.
+                replacement = follow_device_reference(
+                    old, full_device_map, device_tag_map)
+                if replacement:
                     # A reference TO a device, not a link key of its own.
                     sync_edits.append(
-                        make_edit(h, 'panel', field, old,
-                                  full_device_map[old], False))
+                        make_edit(h, 'panel', field, old, replacement, False))
 
         elif kind == 'panelconnector':
             dev_field = resolve_field(h, PCONN_DEVICE_FIELDS)
@@ -743,11 +782,13 @@ def plan_link_sync(edits, parents):
                             make_edit(h, 'panelconnector', tag_field, tag_old,
                                       new_name, False))
 
-            if dev_field and full_device_map and not is_unnamed(dev_old):
-                if dev_old in full_device_map and full_device_map[dev_old] != dev_old:
+            if dev_field and not is_unnamed(dev_old):
+                replacement = follow_device_reference(
+                    dev_old, full_device_map, device_tag_map)
+                if replacement:
                     sync_edits.append(
                         make_edit(h, 'panelconnector', dev_field, dev_old,
-                                  full_device_map[dev_old], False))
+                                  replacement, False))
 
     return sync_edits, have_assoc
 
@@ -871,11 +912,35 @@ def rename_linked_object(handle, field, value):
     routine = cc_routine('CC_OnFindAndReplace')
     if routine is None or not value:
         return False
+
+    # ConnectCAD mirrors the Display Tag onto the new name when the tag
+    # currently equals the old name -- which is the usual case, since name and
+    # tag are the same string on most devices. That is reasonable behaviour in
+    # the interface and a surprise from a tool where the user ticked the name
+    # row and deliberately left the tag row alone. The tag is read first so the
+    # caller can find out.
+    tag_field = resolve_field(handle, DEVICE_TAG_FIELDS)
+    tag_before = read_field(handle, tag_field) if tag_field else ''
+
     try:
         routine(handle, field, value)
     except Exception:
         return False
-    return read_field(handle, field) == value
+    if read_field(handle, field) != value:
+        return False
+
+    rename_linked_object.last_tag_change = None
+    if tag_field:
+        tag_after = read_field(handle, tag_field)
+        if tag_after != tag_before:
+            rename_linked_object.last_tag_change = (tag_field, tag_before,
+                                                    tag_after)
+    return True
+
+
+# Set by the most recent rename: (field, old, new) when ConnectCAD also moved
+# the Display Tag, else None. apply_edits reads it immediately.
+rename_linked_object.last_tag_change = None
 
 
 def edit_order(edit):
@@ -911,7 +976,9 @@ def apply_edits(edits):
     the run."""
     applied = []
     touched = []
+    mirrored = []
     fell_back = 0
+    restored = 0
     for e in sorted(edits, key=edit_order):
         landed = False
         if e['kind'] in ('device', 'equipment') and e['is_link_name']:
@@ -920,6 +987,24 @@ def apply_edits(edits):
             landed = rename_linked_object(e['handle'], e['field'], e['new'])
             if not landed:
                 fell_back += 1
+            else:
+                moved = rename_linked_object.last_tag_change
+                if moved:
+                    tag_field, tag_before, tag_after = moved
+                    planned_tag = any(
+                        p['handle'] == e['handle'] and p['field'] == tag_field
+                        for p in edits)
+                    if planned_tag:
+                        # The user asked for it too; record it as done so it is
+                        # not written a second time and does appear in reports.
+                        mirrored.append(make_edit(e['handle'], e['kind'],
+                                                  tag_field, tag_before,
+                                                  tag_after, False))
+                    else:
+                        # They did not ask. Put it back -- an unticked row is a
+                        # decision, not an oversight.
+                        write_field(e['handle'], tag_field, tag_before)
+                        restored += 1
         if not landed:
             landed = write_field(e['handle'], e['field'], e['new'])
         if landed:
@@ -932,10 +1017,14 @@ def apply_edits(edits):
     for handle in touched:
         if classify(handle) == 'socket':
             vs.ResetObject(handle)
-    if fell_back:
-        apply_edits.fallback_renames = fell_back
-    else:
-        apply_edits.fallback_renames = 0
+    apply_edits.fallback_renames = fell_back
+    apply_edits.tags_restored = restored
+    # Tags ConnectCAD moved that the user also asked for: real changes, so
+    # reports and the duplicate check must see them.
+    for e in mirrored:
+        if not any(a['handle'] == e['handle'] and a['field'] == e['field']
+                   for a in applied):
+            applied.append(e)
     return applied
 
 
@@ -943,6 +1032,10 @@ def apply_edits(edits):
 # Read by the tools so a licence-less session says so rather than quietly
 # leaving every association stale.
 apply_edits.fallback_renames = 0
+
+# Display Tags ConnectCAD moved that the user had deliberately left unticked,
+# and which were therefore put back.
+apply_edits.tags_restored = 0
 
 
 def fallback_rename_note():
@@ -1029,28 +1122,58 @@ def group_by_record(handles):
     return buckets
 
 
+def collect_reference_keys(buckets):
+    """Every string a rename could invalidate, grouped by what it is.
+
+    Returns {"device name": set, "device tag": set, "socket name": set}.
+
+    Device names alone were not enough. A PanelConnector ConnectedDev can hold
+    a device TAG, and its SocketName holds a socket name -- both are references
+    a rename breaks, and scanning only for device names reported a clean
+    document while those fields sat pointing at strings that had just changed.
+    """
+    keys = {'device name': set(), 'device tag': set(), 'socket name': set()}
+    for record_name, handles in buckets.items():
+        plain = record_name.lower().replace(' ', '')
+        for h in handles:
+            if plain == 'device':
+                for label, candidates in (('device name', DEVICE_NAME_FIELDS),
+                                          ('device tag', DEVICE_TAG_FIELDS)):
+                    field = resolve_field(h, candidates)
+                    value = read_field(h, field) if field else ''
+                    if not is_unnamed(value):
+                        keys[label].add(value)
+            elif plain == 'socket':
+                for candidates in (SOCKET_NAME_FIELDS, SOCKET_TAG_FIELDS):
+                    field = resolve_field(h, candidates)
+                    value = read_field(h, field) if field else ''
+                    if not is_unnamed(value):
+                        keys['socket name'].add(value)
+    return keys
+
+
 def collect_device_names(buckets):
     """Every non-empty Device name in the document."""
-    names = set()
-    for record_name, handles in buckets.items():
-        if record_name.lower().replace(' ', '') != 'device':
-            continue
-        for h in handles:
-            field = resolve_field(h, DEVICE_NAME_FIELDS)
-            value = read_field(h, field) if field else ''
-            if not is_unnamed(value):
-                names.add(value)
-    return names
+    return collect_reference_keys(buckets)['device name']
 
 
-def scan_name_references(buckets, device_names):
-    """Find every record+field whose value matches a device name.
+def scan_name_references(buckets, keys):
+    """Every record+field holding a string that a rename would invalidate.
 
-    This is the important one. A device rename is only safe if we know every
-    place that stores the old name. Rather than assume, this reports every
-    field in the document holding one -- which is how PanelConnector was
-    found."""
-    if not device_names:
+    This is the important one. A rename is only safe if we know every place
+    that stores the old string, so rather than assume, this reports every field
+    in the document holding one -- which is how PanelConnector was found the
+    first time, and how its SECOND socket field was missed the first time.
+
+    `keys` is either a plain set of device names or the dict from
+    collect_reference_keys, in which case each hit records which kind of string
+    it matched. One field can hold more than one kind.
+    """
+    if not keys:
+        return {}
+    if not isinstance(keys, dict):
+        keys = {'device name': set(keys)}
+    if not any(keys.values()):
         return {}
 
     hits = {}
@@ -1059,12 +1182,19 @@ def scan_name_references(buckets, device_names):
             continue
         for h in handles:
             for fname, value in get_fields(h):
-                if value and value in device_names:
-                    key = (record_name, fname)
-                    entry = hits.setdefault(key, {'count': 0, 'examples': []})
-                    entry['count'] += 1
-                    if len(entry['examples']) < 3:
-                        entry['examples'].append(value)
+                if not value:
+                    continue
+                matched = [label for label, values in keys.items()
+                           if value in values]
+                if not matched:
+                    continue
+                key = (record_name, fname)
+                entry = hits.setdefault(
+                    key, {'count': 0, 'examples': [], 'kinds': set()})
+                entry['count'] += 1
+                entry['kinds'].update(matched)
+                if len(entry['examples']) < 3:
+                    entry['examples'].append(value)
     return hits
 
 
@@ -1381,18 +1511,26 @@ def build_dump_report():
     except Exception:
         pass          # the readable section above is the important half
 
-    device_names = collect_device_names(buckets)
+    keys = collect_reference_keys(buckets)
     lines.append('--- NAME REFERENCE SCAN ---')
-    lines.append('Distinct device names found: {}'.format(len(device_names)))
+    for label in ('device name', 'device tag', 'socket name'):
+        lines.append('Distinct {}s found: {}'.format(label, len(keys[label])))
     lines.append('')
-    lines.append('Fields anywhere in the document holding a device name.')
-    lines.append('EVERY one of these breaks if a device is renamed without it:')
+    lines.append('Fields anywhere in the document holding one of those '
+                 'strings.')
+    lines.append('EVERY one of these breaks if the thing it names is renamed '
+                 'without it.')
+    lines.append('Device TAGS and SOCKET names are searched too: a '
+                 'PanelConnector holds a')
+    lines.append('device by either name or tag, and names its socket in a '
+                 'field of its own.')
     lines.append('')
-    hits = scan_name_references(buckets, device_names)
+    hits = scan_name_references(buckets, keys)
     if hits:
         for (record_name, fname), entry in sorted(hits.items()):
-            lines.append('  {:<18} . {:<22} {} object(s)'.format(
-                record_name, fname, entry['count']))
+            lines.append('  {:<18} . {:<22} {} object(s)   [{}]'.format(
+                record_name, fname, entry['count'],
+                ', '.join(sorted(entry['kinds']))))
             for example in entry['examples']:
                 lines.append('      e.g. "{}"'.format(example))
     else:
@@ -1556,6 +1694,10 @@ def write_normalise_report(edits, sync_edits, socket_col, duplicates,
 
     if not preview:
         lines.append('Circuits reset: {}'.format(circuits_reset))
+    warning = fallback_rename_note()
+    if warning:
+        lines.append('')
+        lines.append(warning)
         lines.append('')
 
     lines.append('Total changes {}: {}'.format(
@@ -1916,6 +2058,10 @@ def write_match_report(applied, synced, skipped_blank, failed, circuits_reset,
         lines.append('')
 
     lines.append('Circuits reset: {}'.format(circuits_reset))
+    warning = fallback_rename_note()
+    if warning:
+        lines.append('')
+        lines.append(warning)
     return '\n'.join(lines)
 
 
@@ -2157,6 +2303,8 @@ SPELL_FIELDS = {
     'equipment': ([(EQUIP_NAME_FIELDS, True)]
                   + [(f, False) for f in USER_FIELDS]),
     'circuit': [(['Label'], False), (['Number'], False), (['Cable'], False)],
+    'external': ([(EXTERNAL_TEXT_FIELDS, False)]
+                 + [(f, False) for f in USER_FIELDS]),
 }
 
 # Tuning. Rarity is counted in OBJECTS, not field occurrences: one typo
@@ -2612,6 +2760,10 @@ def write_spelling_report(accepted, edits, sync_edits, ignored,
 
     if not preview:
         lines.append('Circuits reset: {}'.format(circuits_reset))
+    warning = fallback_rename_note()
+    if warning:
+        lines.append('')
+        lines.append(warning)
     return '\n'.join(lines)
 
 
@@ -3754,9 +3906,10 @@ def golden_physical(entry):
         value = golden_number(entry, key)
         if value is not None:
             out[key] = value
-    racked = golden_is_rack_mounted(entry)
-    if racked is not None:
-        out['racked'] = racked
+    width = golden_rack_width(entry)
+    if width:
+        out['rack_width'] = width
+        out['racked'] = width != 'non-rack'
     rack_u = golden_number(entry, 'rack u')
     if rack_u is not None:
         out['rack_u'] = rack_u
@@ -3824,10 +3977,13 @@ def apply_physical_properties(handle, physical, upi, log=None, source=''):
         if write_field(handle, field, '{:g}'.format(value)):
             written.append(field)
 
-    if 'racked' in physical:
-        if write_field(handle, 'width_R',
-                       'full-rack' if physical['racked'] else 'non-rack'):
-            written.append('width_R')
+    # The explicit width wins; the boolean is the fallback for sources that
+    # only know whether a thing is racked, such as the shipped database.
+    rack_width = physical.get('rack_width')
+    if not rack_width and 'racked' in physical:
+        rack_width = 'full-rack' if physical['racked'] else 'non-rack'
+    if rack_width and write_field(handle, 'width_R', rack_width):
+        written.append('width_R')
     if physical.get('rack_u') is not None:
         if write_field(handle, 'heightU', '{:g}'.format(physical['rack_u'])):
             written.append('heightU')
@@ -3982,6 +4138,7 @@ def probe_make_device(name, x, y, width, height, socket_specs, log,
         log.append('  WARN  device body not measurable; sockets left unplaced')
 
     made = 0
+    failed_sockets = 0
     per_side = {}
     for spec in socket_specs:
         symbol_name, socket_name, socket_type, side = spec[:4]
@@ -4011,10 +4168,20 @@ def probe_make_device(name, x, y, width, height, socket_specs, log,
         # dimensions -- a 2.0 x 1.0 request came back 3.0 x 1.4 -- so the
         # socket is moved onto the device's MEASURED edge. Anything derived
         # from the requested width lands in the wrong place.
-        place_socket(socket, body_box, side, index, upi, scale, gy)
-        write_field(socket, 'name', socket_name)
-        write_field(socket, 'tag', socket_name)
-        write_field(socket, 'type', socket_type)
+        # Every one of these used to be discarded, so a socket that failed to
+        # place and never got its name still counted towards 'N of M added'
+        # and the probe reported success.
+        problems = []
+        if not place_socket(socket, body_box, side, index, upi, scale, gy):
+            problems.append('not placed')
+        name_field = resolve_field(socket, SOCKET_NAME_FIELDS) or 'name'
+        tag_field = resolve_field(socket, SOCKET_TAG_FIELDS) or 'tag'
+        if not write_field(socket, name_field, socket_name):
+            problems.append('name refused')
+        if not write_field(socket, tag_field, socket_name):
+            problems.append('tag refused')
+        if not write_field(socket, 'type', socket_type):
+            problems.append('type refused')
         # Without these the socket renders '???' for its signal and connector.
         # No invented defaults. A socket with no signal given used to be
         # stamped LAN on an EC-6A Ethercon, so a power inlet or an unspecified
@@ -4025,12 +4192,20 @@ def probe_make_device(name, x, y, width, height, socket_specs, log,
             write_field(socket, 'signal', spec_signal)
         if spec_connector:
             write_field(socket, 'connector', spec_connector)
+        if problems:
+            log.append('  FAIL  socket {!r}: {}'.format(
+                socket_name, ', '.join(problems)))
+            failed_sockets += 1
+            continue
         try:
             vs.ResetObject(socket)
         except Exception:
             pass
         made += 1
 
+    if failed_sockets:
+        log.append('  WARN  {} socket(s) were created but could not be placed '
+                   'or named'.format(failed_sockets))
     log.append('  {}    {} of {} socket(s) added'.format(
         'ok  ' if made == len(socket_specs) else 'PART', made, len(socket_specs)))
     try:
@@ -4613,9 +4788,9 @@ def tool_creation_probe():
     log.append('1. Device with sockets (SHORT name, built by hand)')
     first, first_sockets = probe_make_device(
         PROBE_PREFIX + ' A', 0, 0, 2.0, 1.0,
-        [('skt_R', 'OUT 1', 'OUT', 1),
-         ('skt_R', 'OUT 2', 'OUT', 1),
-         ('skt_R', 'OUT 3', 'OUT', 1)], log, upi, scale, grid,
+        [('skt_R', 'OUT 1', 'OUT', 1, 'LINE', 'XLR3F'),
+         ('skt_R', 'OUT 2', 'OUT', 1, 'LINE', 'XLR3F'),
+         ('skt_R', 'OUT 3', 'OUT', 1, 'LINE', 'XLR3F')], log, upi, scale, grid,
         'CC Tools', 'Probe')
     log.append('')
 
@@ -4623,9 +4798,9 @@ def tool_creation_probe():
                'the body?)')
     second, second_sockets = probe_make_device(
         PROBE_PREFIX + ' B WITH A MUCH LONGER NAME', 6.0, 0, 2.0, 1.0,
-        [('skt_L', 'IN 1', 'IN', -1),
-         ('skt_L', 'IN 2', 'IN', -1),
-         ('skt_L', 'IN 3', 'IN', -1)], log, upi, scale, grid,
+        [('skt_L', 'IN 1', 'IN', -1, 'LINE', 'XLR3M'),
+         ('skt_L', 'IN 2', 'IN', -1, 'LINE', 'XLR3M'),
+         ('skt_L', 'IN 3', 'IN', -1, 'LINE', 'XLR3M')], log, upi, scale, grid,
         'CC Tools', 'Probe')
     log.append('')
 
@@ -4991,12 +5166,14 @@ REPLACE_FIELDS = {
     'equipment': [(EQUIP_NAME_FIELDS, True)],
     'socket': [(SOCKET_NAME_FIELDS, True), (SOCKET_TAG_FIELDS, False)],
     'circuit': [(['Label'], False), (['Number'], False), (['Cable'], False)],
+    # Tag only. 'name' is the '<EXT>' sentinel.
+    'external': [(EXTERNAL_TEXT_FIELDS, False), (['description'], False)],
 }
 
 # What each tick box covers. Equipment rides with devices because an equipment
 # item's name IS its device's name -- they are one string in two places.
 REPLACE_GROUPS = {
-    'devices': ('device', 'equipment'),
+    'devices': ('device', 'equipment', 'external'),
     'sockets': ('socket',),
     'circuits': ('circuit',),
 }
@@ -5346,11 +5523,12 @@ def tool_find_replace():
                      'renamed here')
         lines.append('             is now unlinked from its equipment item.')
     lines.append('Applied:     {}'.format(len(applied)))
-    note = fallback_rename_note()
-    if note:
-        lines.append('')
-        lines.append(note)
+
     lines.append('Circuits reset: {}'.format(reset))
+    warning = fallback_rename_note()
+    if warning:
+        lines.append('')
+        lines.append(warning)
     lines.append('')
     if duplicates:
         lines.append('NAMES NOW SHARED BY MORE THAN ONE OBJECT')
@@ -5476,6 +5654,11 @@ def object_label(handle, kind, parents=None):
         field = resolve_field(handle, EQUIP_NAME_FIELDS)
         return read_field(handle, field) if field else ''
 
+    if kind == 'external':
+        field = resolve_field(handle, EXTERNAL_TEXT_FIELDS)
+        label = read_field(handle, field) if field else ''
+        return label or '(unlabelled external)'
+
     return get_pio_name(handle)
 
 
@@ -5538,7 +5721,8 @@ def ask_search():
     vs.CreateStaticText(dlg, qKindLbl, 'Objects:', -1)
     vs.CreateCheckBox(dlg, qDevChk, 'Devices')
     vs.CreateCheckBox(dlg, qCircChk, 'Circuits')
-    vs.CreateCheckBox(dlg, qOtherChk, 'Sockets, equipment and panels')
+    vs.CreateCheckBox(dlg, qOtherChk,
+                      'Sockets, equipment, panels and external links')
 
     vs.CreateCheckBox(dlg, qCaseChk, 'Match case')
     vs.CreateCheckBox(dlg, qWholeChk, 'Match the whole field, not part of it')
@@ -5592,7 +5776,8 @@ def ask_search():
             if vs.GetBooleanItem(dlg, qCircChk):
                 kinds.add('circuit')
             if vs.GetBooleanItem(dlg, qOtherChk):
-                kinds.update(('socket', 'equipment', 'panel', 'panelconnector'))
+                kinds.update(('socket', 'equipment', 'panel', 'panelconnector',
+                              'external'))
             chosen.update({
                 'term': vs.GetItemText(dlg, qTermEdit) or '',
                 'scope': vs.GetSelectedChoiceIndex(dlg, qScopePopup, 0),
@@ -6151,16 +6336,31 @@ def golden_number(entry, key):
         return None
 
 
-def golden_is_rack_mounted(entry):
-    """True, False, or None when the curated list does not say."""
+def golden_rack_width(entry):
+    """The width_R value a curated device calls for, or '' if unstated.
+
+    ConnectCAD takes three: 'full-rack', 'half-rack' and 'non-rack'. Collapsing
+    this to a boolean made half-rack unreachable, so a half-rack device was
+    drawn spanning the full nineteen inches and two of them could not share a
+    rack unit."""
     raw = golden_property(entry, 'rack mounted').strip().lower()
     if not raw:
+        return ''
+    if raw in ('half', 'half-rack', 'half rack'):
+        return 'half-rack'
+    if raw in ('yes', 'y', 'true', 'full', 'full-rack', 'full rack', 'rack'):
+        return 'full-rack'
+    if raw in ('no', 'n', 'false', 'none', 'not racked', 'non-rack'):
+        return 'non-rack'
+    return ''
+
+
+def golden_is_rack_mounted(entry):
+    """True, False, or None when the curated list does not say."""
+    width = golden_rack_width(entry)
+    if not width:
         return None
-    if raw in ('yes', 'y', 'true', 'full-rack', 'half-rack', 'rack'):
-        return True
-    if raw in ('no', 'n', 'false', 'none', 'not racked'):
-        return False
-    return None
+    return width != 'non-rack'
 
 
 def find_golden_device(make, model):
@@ -7189,6 +7389,22 @@ def wire_job(job, made, log):
         log.append('  FAIL  DoMenuTextByName unavailable; nothing wired')
         return 0, [(c, 'no way to run ConnectSelected') for c in circuits]
 
+    # Everything that was already a circuit before this run. Without it, a job
+    # drawn twice into the same file -- the normal iterate loop -- matched its
+    # circuits against the FIRST run's objects: the old circuit absorbed the
+    # job's signal, cable name and class while the one just drawn kept
+    # ConnectSelected's defaults, and the run reported success.
+    pre_existing = set(h for h in walk_document() if classify(h) == 'circuit')
+
+    # Whether the endpoints can be read at all. Without this the verification
+    # blames the circuits for a silence that is really ConnectCAD's routines
+    # being unavailable, and reports every one of them as NOT WIRED.
+    if cc_routine('CC_GetCircuitSource') is None:
+        log.append('  WARN  CC_GetCircuitSource is unavailable, so no circuit '
+                   'can be verified.')
+        log.append('        Wiring was attempted; whether it took cannot be '
+                   'read from here.')
+
     for source, destination in pairs:
         try:
             vs.DSelectAll()
@@ -7211,6 +7427,7 @@ def wire_job(job, made, log):
     # just counted, because each job circuit's signal, wire number and cable
     # name still have to be written onto the object ConnectSelected made.
     actual = {}
+    already_there = 0
     for handle in walk_document():
         if classify(handle) != 'circuit':
             continue
@@ -7219,6 +7436,11 @@ def wire_job(job, made, log):
             continue
         key = endpoint_key(source.get('device'), source.get('socket'),
                            destination.get('device'), destination.get('socket'))
+        if handle in pre_existing:
+            # Counted so the report can say a job circuit duplicates one that
+            # was already in the drawing, but never written to.
+            already_there += 1
+            continue
         actual.setdefault(key, []).append(handle)
 
     prefs = load_prefs()
@@ -7226,6 +7448,7 @@ def wire_job(job, made, log):
     # How many circuits have already left this device, so each one after the
     # first turns a little further out and the drops do not coincide.
     leaving = {}
+    readable = cc_routine('CC_GetCircuitSource') is not None
     missing = []
     finished = 0
     staggered = 0
@@ -7248,8 +7471,11 @@ def wire_job(job, made, log):
                 finished += 1
             if 'elbow' in written:
                 staggered += 1
-        else:
+        elif readable:
             missing.append((circuit, 'no circuit found between these sockets'))
+        else:
+            missing.append((circuit, 'cannot be checked -- '
+                                     'CC_GetCircuitSource unavailable'))
 
     if finished:
         log.append('  {} circuit(s) given their signal and cable name'.format(
@@ -7257,6 +7483,9 @@ def wire_job(job, made, log):
     if staggered:
         log.append('  {} circuit(s) had their elbow moved so parallel runs do '
                    'not overlap'.format(staggered))
+    if already_there:
+        log.append('  {} circuit(s) already existed between these sockets and '
+                   'were left alone'.format(already_there))
     return len(circuits) - len(missing), missing
 
 

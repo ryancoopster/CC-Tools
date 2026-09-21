@@ -104,8 +104,14 @@ check('T7 circuit endpoint cache ignored', 'swtch' not in f7, repr(sorted(f7)))
 # destructive operation, on the field that is the link key.
 import inspect, re
 body = inspect.getsource(m.tool_spellcheck)
+# Compare the BRANCHES, not the first mention of each name: the early-return
+# gate now names several actions above them all.
+import re as _re
+branches = dict((mt.group(1), mt.start()) for mt in
+                _re.finditer(r"if settings\['action'\] == (ACTION_SPELL_\w+)",
+                             body))
 check('APPLY is handled before the catch-all else',
-      body.index('ACTION_SPELL_APPLY') < body.index('ACTION_SPELL_REVIEW'),
+      branches['ACTION_SPELL_APPLY'] < branches['ACTION_SPELL_REVIEW'],
       'APPLY must be tested first or it falls through')
 check('APPLY reads the CSV', 'load_vocabulary_csv()' in body, body[:0])
 check('the CSV reader is no longer orphaned',
