@@ -522,5 +522,81 @@ check('T13 and leaves no temporary file',
       not os.path.exists(m.golden_path() + '.new'))
 clear_specs()
 
+
+# ── T14: an update installed from the launcher ENDS the run ───────────────
+# The new code is on disk but this interpreter still holds the old one, and
+# nothing can reload it. Continuing would run the version just replaced,
+# against a real drawing.
+clean()
+m.save_prefs(dict(m.PREF_DEFAULTS, check_for_updates=True,
+                  update_interval_days=0.0))
+m.save_update_state(dict(m.UPDATE_STATE_DEFAULTS, consent_asked=True))
+m.install_update = lambda src: (True, '')
+stub_fetch(payload=GOOD, manifest=good_manifest)
+
+alerts = []
+vs.AlrtDialog = lambda text: alerts.append(text)
+texts = {}
+_set = vs.SetItemText
+
+
+def record(dlg, item, text):
+    _set(dlg, item, text)
+    texts[item] = text
+
+
+vs.SetItemText = record
+
+
+def click_update_then_continue(dlg, handler):
+    handler(12255, 0)
+    vs.answers = [m.UPDATE_ANSWER_NOW]
+    handler(m.lUpdBtn, 0)          # the update installs here
+    # Tick real boxes: dialog_overrides is applied by the mock's own
+    # RunLayoutDialog, which this replaces, so it would tick nothing.
+    vs.SetBooleanItem(dlg, m.lNormChk, True)
+    vs.SetBooleanItem(dlg, m.lJobChk, True)
+    handler(1, 0)                  # ...and the user ticks tools and continues
+    return 1
+
+
+vs.RunLayoutDialog = click_update_then_continue
+picked = m.ask_which_tools()
+check('T14 ticking tools after an update runs none of them',
+      picked is None, picked)
+check('T14 and the user is told CC Tools has closed',
+      any('has closed' in a for a in alerts), alerts)
+check('T14 and told to pick it again',
+      any('menu again' in a for a in alerts), alerts)
+check('T14 the status line reported the update too',
+      'Updated' in texts.get(m.lSpecTxt, ''), texts.get(m.lSpecTxt))
+
+# Without an update, ticking tools still works exactly as before.
+clean()
+m.save_prefs(dict(m.PREF_DEFAULTS, check_for_updates=False))
+m.save_update_state(dict(m.UPDATE_STATE_DEFAULTS, consent_asked=True))
+alerts[:] = []
+same = manifest_for(GOOD, version=m.CC_TOOLS_VERSION)
+stub_fetch(payload=GOOD, manifest=same)
+
+
+def click_update_nothing_new(dlg, handler):
+    handler(12255, 0)
+    handler(m.lUpdBtn, 0)          # checks, finds nothing
+    vs.SetBooleanItem(dlg, m.lNormChk, True)
+    handler(1, 0)
+    return 1
+
+
+vs.RunLayoutDialog = click_update_nothing_new
+vs.dialog_overrides = {}
+picked = m.ask_which_tools()
+check('T14 a check that finds nothing new does not block the run',
+      picked == [m.TOOL_NORMALISE], picked)
+check('T14 and says so without an alert',
+      not any('has closed' in a for a in alerts), alerts)
+
+vs.SetItemText = _set
+
 clean()
 R.report_and_exit()

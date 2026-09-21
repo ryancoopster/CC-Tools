@@ -1,11 +1,9 @@
 {
-  "version": "0.9.4",
-  "bytes": 384524,
-  "sha256": "152cd5b459adec27a6c0f7548d5c11eceac9328b6d997fde926787fe4f7e42d3",
+  "version": "0.9.5",
+  "bytes": 385491,
+  "sha256": "e321df351ee1b805114585817cc4e5a7851d83cba496f4ac07b984fd4bd0b491",
   "min_stub": 1,
   "notes": [
-    "Fixed status text being cut off at the bottom of the launcher",
-    "The Copy JOB-SPEC.md button is now the recommended way to give Claude the spec",
-    "Pull-down menus size themselves to their labels, so no choice is clipped"
+    "Installing an update now closes CC Tools, so the next launch runs the new version"
   ]
 }

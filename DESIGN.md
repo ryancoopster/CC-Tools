@@ -312,6 +312,15 @@ count and a SHA-256, checked along with `compile()` before anything is written,
 and the write is a temp file plus `os.replace` so the live file is never
 half-written.
 
+**An installed update ends the run**, on both paths. The automatic check runs
+before the launcher and returns; the manual button sets a flag so that
+whichever button closes the dialog, no tool is selected and the run stops with
+"CC Tools has been updated and has closed." Without that flag a user could
+click *Check for updates*, install, then tick tools and press Continue — and
+every one of them would run from the version that had just been replaced,
+against a live drawing, because this interpreter still holds the old code and
+nothing can reload it.
+
 Bookkeeping lives in `update_state.json`, **not** `preferences.json`, because
 `save_prefs` rewrites that file from `PREF_DEFAULTS` keys alone and would
 destroy any extra key on the next save.

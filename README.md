@@ -221,6 +221,11 @@ When there is a new version you get the release notes and three choices:
 **Check for updates** button at the bottom of the launcher, which ignores both
 the interval and anything you skipped.
 
+**Installing an update closes CC Tools.** The new code is on disk, but
+Vectorworks is still holding the old one in memory and nothing can reload it —
+so carrying on would run the version you just replaced. Pick CC Tools from the
+menu again and you are on the new one.
+
 Downloads are verified before they are installed — byte count, SHA-256, and
 whether the file compiles — and the version being replaced is kept alongside
 as `cc_tools.py.previous`. Both settings live in **Preferences**, which also

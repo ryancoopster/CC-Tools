@@ -40,7 +40,7 @@ BASE_FOLDER = os.path.expanduser('~/Documents/CC Tools')
 # The running version. The update check compares this against the version
 # published in update.json at the top of the repository, so the two must be
 # bumped together -- tools/release.py does both and refuses to do one.
-CC_TOOLS_VERSION = '0.9.4'
+CC_TOOLS_VERSION = '0.9.5'
 
 TYPE_GROUP = 11
 TYPE_PIO   = 86
@@ -8730,8 +8730,9 @@ def offer_update(manifest, state):
     kept = '\nThe previous version is kept at {}'.format(detail) if detail else ''
     if spec_note and spec_note != 'device list updated':
         kept += '\n\n' + spec_note
-    return True, ('Updated to {}.\n\nPick CC Tools from the menu again to '
-                  'use it.{}'.format(manifest['version'], kept)), state
+    return True, ('Updated to {}. CC Tools has closed.\n\n'
+                  'Pick it from the menu again to start the new version.{}'
+                  .format(manifest['version'], kept)), state
 
 
 def run_update_check(force=False):
@@ -8896,12 +8897,22 @@ def ask_which_tools():
             installed, status = run_update_check(force=True)
             vs.SetItemText(dlg, lSpecTxt, wrap_status(
                 status or 'No update information was available.'))
+            if installed:
+                # The new code is on disk, but this interpreter is still
+                # holding the old one and nothing can reload it. Carrying on
+                # from here would run the version that was just replaced,
+                # against a real drawing. So the run ends instead.
+                chosen['updated'] = True
         elif item == lSpecBtn:
             # A push button reports and leaves the dialog open, so the result
             # goes to the line under it rather than to an alert the user would
             # have to dismiss before carrying on.
             vs.SetItemText(dlg, lSpecTxt, wrap_status(copy_job_spec()))
         elif item == kOK:
+            if chosen.get('updated'):
+                # An update landed while this dialog was open. Nothing is
+                # selected, whatever the boxes say.
+                return
             picked = []
             # Fixed order, independent of which boxes the user ticked first.
             # Preferences lead: ticking them alongside Draw schematic job
@@ -8932,7 +8943,15 @@ def ask_which_tools():
                 picked.append(TOOL_JOB)
             chosen['tools'] = picked
 
-    if vs.RunLayoutDialog(dlg, handler) != kOK:
+    answer = vs.RunLayoutDialog(dlg, handler)
+    if chosen.get('updated'):
+        # Whichever button closed the dialog, an update was installed and this
+        # session is still running the old code. Say so and stop.
+        vs.AlrtDialog(
+            'CC Tools has been updated and has closed.\n\n'
+            'Pick CC Tools from the menu again to start the new version.')
+        return None
+    if answer != kOK:
         return None
     return chosen.get('tools')
 
