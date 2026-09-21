@@ -1,20 +1,32 @@
-"""CC Tools loader — paste THIS into the Vectorworks Plug-in Manager.
+"""CC Tools — paste THIS into the Vectorworks Plug-in Manager.
 
-This is the only part that ever gets pasted, and it never needs pasting
-again. It loads the real plug-in from:
+This short script is the whole install. It is the only thing you ever paste,
+and it never needs pasting again.
 
-    ~/Documents/CC Tools/app/cc_tools.py
+On its first run it offers to fetch CC Tools from its public repository:
 
-which is a plain file the updater can replace in one step. Vectorworks has no
-way to reload a plug-in's code in a running session -- there is no API for it,
-and its own Plug-in Manager says installing a plug-in needs a restart -- so
-keeping the code in a file, rather than inside the .vsm, is what lets an
-update take effect on the next menu click instead of the next launch.
+    https://github.com/ryancoopster/CC-Tools
 
-SETUP, once:
-  1. Make the folder  ~/Documents/CC Tools/app/
-  2. Save cc_tools.py into it.
-  3. Plug-in Manager > CC Tools > Edit Script, select all, paste this, OK.
+and saves it to ~/Documents/CC Tools/app/cc_tools.py. After that it simply
+loads that file each time, and CC Tools keeps itself up to date from inside
+Vectorworks.
+
+TO INSTALL:
+  1. Plug-in Manager > New… > Command, name it "CC Tools", language Python.
+  2. Edit Script…, paste this whole file, save.
+  3. Tools > Workspaces > Edit Current Workspace > Menus, and drag
+     "CC Tools" into a menu.
+  4. Pick it from that menu. It will offer to download the rest.
+
+WHY A LOADER AND NOT THE WHOLE PROGRAM: Vectorworks cannot reload a plug-in's
+code in a running session -- there is no API for it, and its own Plug-in
+Manager says installing a plug-in needs a restart. Keeping the program in a
+plain file instead means an update takes effect on the next menu click.
+
+WHAT IT DOWNLOADS, AND HOW IT CHECKS IT: the repository publishes update.json
+carrying the expected byte count and SHA-256. Both are verified, and the file
+must compile, before anything is written to disk. The two URLs below are
+constants -- update.json cannot redirect the download somewhere else.
 """
 import os
 import sys
@@ -22,35 +34,179 @@ import traceback
 
 import vs
 
-# Bumped only when the stub's contract with the payload changes. update.json
-# can carry "min_stub" to refuse an update that would need a newer loader.
-CC_TOOLS_STUB_VERSION = 1
+# Raised only when this file's contract with the program changes.
+CC_TOOLS_STUB_VERSION = 2
 
-PAYLOAD = os.path.expanduser('~/Documents/CC Tools/app/cc_tools.py')
-BACKUP = PAYLOAD + '.previous'
+REPO = 'ryancoopster/CC-Tools'
+BRANCH = 'main'
+RAW = 'https://raw.githubusercontent.com/{}/{}/'.format(REPO, BRANCH)
+MANIFEST_URL = RAW + 'update.json'
+PAYLOAD_URL = RAW + 'cc_tools.py'
+SPEC_URL = RAW + 'JOB-SPEC.md'
+
+BASE = os.path.expanduser('~/Documents/CC Tools')
+APP_FOLDER = os.path.join(BASE, 'app')
+PAYLOAD = os.path.join(APP_FOLDER, 'cc_tools.py')
+PREVIOUS = PAYLOAD + '.previous'
+SPEC = os.path.join(BASE, 'JOB-SPEC.md')
+
+# Vectorworks' bundled OpenSSL has a compiled-in certificate directory that
+# does not exist in the install, so a default SSL context trusts NOTHING and
+# every request fails. An explicit bundle is required.
+#
+# Do NOT "fix" this with vs.InstallCertificate(). Vectorworks' own uploaders
+# call it, and what it does is set ssl._create_unverified_context -- it makes
+# HTTPS work by turning certificate verification OFF. For a file we are about
+# to execute, that is the whole attack.
+CA_BUNDLES = ('/etc/ssl/cert.pem', '/usr/local/etc/openssl/cert.pem')
+
+
+def _context():
+    import ssl
+    candidates = list(CA_BUNDLES)
+    try:
+        import certifi
+        candidates.append(certifi.where())
+    except Exception:
+        pass
+    for path in candidates:
+        try:
+            if path and os.path.exists(path):
+                context = ssl.create_default_context(cafile=path)
+                if context.get_ca_certs():
+                    return context
+        except Exception:
+            continue
+    return None
+
+
+def _fetch(url, timeout):
+    """GET over verified HTTPS. Returns (bytes, error)."""
+    if not url.startswith('https://'):
+        return None, 'refusing a URL that is not HTTPS'
+    context = _context()
+    if context is None:
+        return None, ('no certificate authority bundle was found, so the '
+                      'download could not be verified')
+    try:
+        import urllib.request
+        request = urllib.request.Request(
+            url, headers={'User-Agent': 'CC-Tools-stub/%d' %
+                          CC_TOOLS_STUB_VERSION})
+        response = urllib.request.urlopen(request, timeout=timeout,
+                                          context=context)
+        try:
+            return response.read(8 * 1024 * 1024), ''
+        finally:
+            response.close()
+    except Exception as err:
+        return None, '%s: %s' % (type(err).__name__, err)
+
+
+def _write(path, text):
+    """Write atomically: a sibling file, flushed, then renamed over the top."""
+    temporary = path + '.new'
+    with open(temporary, 'w', encoding='utf-8', newline='\n') as handle:
+        handle.write(text)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
+
+
+def _download():
+    """Fetch and verify CC Tools. Returns (ok, message)."""
+    import hashlib
+    import json
+
+    data, error = _fetch(MANIFEST_URL, 15.0)
+    if error:
+        return False, 'Could not reach GitHub.\n\n%s' % error
+    try:
+        manifest = json.loads(data.decode('utf-8'))
+    except Exception as err:
+        return False, 'The version file could not be read.\n\n%s' % err
+    if not isinstance(manifest, dict):
+        return False, 'The version file is not in the expected format.'
+    expected = str(manifest.get('sha256') or '').strip().lower()
+    version = str(manifest.get('version') or 'an unknown version')
+    # Refused before the download starts: with no checksum there would be
+    # nothing to check the file against, and it is about to be executed.
+    if len(expected) != 64:
+        return False, ('The version file publishes no usable checksum, so '
+                       'the download could not be verified.')
+
+    data, error = _fetch(PAYLOAD_URL, 60.0)
+    if error:
+        return False, 'Could not download CC Tools.\n\n%s' % error
+
+    size = manifest.get('bytes')
+    if isinstance(size, int) and len(data) != size:
+        return False, ('The download is incomplete: %d bytes, expected %d.'
+                       % (len(data), size))
+    if hashlib.sha256(data).hexdigest() != expected:
+        return False, ('The download does not match its published checksum, '
+                       'so it has not been installed.')
+    try:
+        source = data.decode('utf-8')
+        compile(source, PAYLOAD, 'exec')
+    except Exception as err:
+        return False, 'The download is not valid Python.\n\n%s' % err
+
+    try:
+        os.makedirs(APP_FOLDER, exist_ok=True)
+        _write(PAYLOAD, source)
+    except Exception as err:
+        return False, 'Could not save to:\n%s\n\n%s' % (PAYLOAD, err)
+
+    # The device list. Not code, so it is not checksummed, and failing to get
+    # it must not stop CC Tools working -- it only means the curated physical
+    # data is missing until the file is put there by hand.
+    note = ''
+    if not os.path.exists(SPEC):
+        spec, spec_error = _fetch(SPEC_URL, 60.0)
+        if spec_error:
+            note = ('\n\nJOB-SPEC.md could not be downloaded (%s). CC Tools '
+                    'works without it, but device dimensions and rack data '
+                    'will be missing until you copy it to:\n%s'
+                    % (spec_error, SPEC))
+        else:
+            try:
+                os.makedirs(BASE, exist_ok=True)
+                _write(SPEC, spec.decode('utf-8'))
+            except Exception as err:
+                note = '\n\nJOB-SPEC.md could not be saved: %s' % err
+
+    return True, 'CC Tools %s installed to:\n%s%s' % (version, PAYLOAD, note)
 
 
 def _load(path):
     with open(path, 'r', encoding='utf-8') as handle:
         source = handle.read()
-    code = compile(source, path, 'exec')
-    namespace = {
+    exec(compile(source, path, 'exec'), {
         '__name__': '__main__',
         '__file__': path,
         'CC_TOOLS_PAYLOAD': PAYLOAD,
         'CC_TOOLS_STUB_VERSION': CC_TOOLS_STUB_VERSION,
-    }
-    exec(code, namespace)
+    })
 
 
 def main():
     if not os.path.isfile(PAYLOAD):
-        vs.AlrtDialog(
-            'CC Tools cannot find its program file.\n\n'
-            'Expected it at:\n{}\n\n'
-            'Copy cc_tools.py from the CC-Tools repository into that folder, '
-            'then run this again.'.format(PAYLOAD))
-        return
+        asked = vs.AlertQuestion(
+            'CC Tools is not installed yet. Download it now?',
+            'It will be downloaded from:\n%s\n\nand saved to:\n%s\n\n'
+            'The download is checked against the checksum published with it '
+            'before anything is saved. Nothing else on your computer is '
+            'touched, and no information about you or your drawings is sent.'
+            % (PAYLOAD_URL, PAYLOAD),
+            0, 'Download', 'Cancel', '', '')
+        if asked != 1:
+            return
+        ok, message = _download()
+        if not ok:
+            vs.AlrtDialog('CC Tools could not be installed.\n\n%s' % message)
+            return
+        vs.AlrtDialog(message)
 
     try:
         _load(PAYLOAD)
@@ -58,27 +214,24 @@ def main():
     except Exception:
         first = traceback.format_exc()
 
-    # The live file is broken. An update writes atomically and keeps the
+    # The program file is broken. An update writes atomically and keeps the
     # version it replaced, so there is very likely a working one right here --
-    # try it rather than leaving the user with a dead menu item and no way
-    # back from inside Vectorworks.
-    if os.path.isfile(BACKUP):
+    # run that rather than leaving a dead menu item and no way back.
+    if os.path.isfile(PREVIOUS):
         try:
-            _load(BACKUP)
+            _load(PREVIOUS)
             vs.AlrtDialog(
-                'CC Tools failed to load and has fallen back to the previous '
-                'version, which is running now.\n\n'
-                'The broken file is:\n{}\n\n'
-                'Replace it with the working copy at:\n{}\n\n'
-                'The error was:\n{}'.format(PAYLOAD, BACKUP, first[-800:]))
+                'CC Tools failed to start and has fallen back to the previous '
+                'version, which is running now.\n\nThe broken file is:\n%s\n\n'
+                'The error was:\n%s' % (PAYLOAD, first[-700:]))
             return
         except Exception:
             pass
 
     vs.AlrtDialog(
-        'CC Tools could not start.\n\n{}\n\nThe program file is:\n{}\n\n'
-        'Replacing it with a fresh copy from the CC-Tools repository will '
-        'fix this.'.format(first[-1200:], PAYLOAD))
+        'CC Tools could not start.\n\n%s\n\nIts program file is:\n%s\n\n'
+        'Deleting that file and running CC Tools again will download a fresh '
+        'copy.' % (first[-1000:], PAYLOAD))
 
 
 main()

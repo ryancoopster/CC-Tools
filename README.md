@@ -160,35 +160,48 @@ use.** If a drawing matters, back it up before pointing this at it.
 
 ## Install
 
-You paste a small **loader** once. After that the plug-in updates itself and the
-Plug-in Manager never needs opening again.
+Paste one short script. It downloads the rest itself.
 
-1. Make the folder `~/Documents/CC Tools/app/` and save
-   [`cc_tools.py`](cc_tools.py) into it. That file is the plug-in.
-2. In Vectorworks: **Tools ▸ Plug-ins ▸ Plug-in Manager…**
-3. **New… ▸ Command**, name it `CC Tools`, set language to **Python**.
-4. **Edit Script…**, paste the entire contents of [`tools/stub.py`](tools/stub.py)
-   — the loader, about 80 lines, *not* `cc_tools.py` — then save.
-5. Add it to your workspace: **Tools ▸ Workspaces ▸ Edit Current Workspace ▸
-   Menus**, and drag **CC Tools** into a menu.
+1. In Vectorworks: **Tools ▸ Plug-ins ▸ Plug-in Manager…**
+2. **New… ▸ Command**, name it `CC Tools`, set language to **Python**.
+3. **Edit Script…**, paste the whole of [`tools/stub.py`](tools/stub.py), then save.
+4. **Tools ▸ Workspaces ▸ Edit Current Workspace ▸ Menus**, find **CC Tools** in
+   the list on the left, and drag it into a menu on the right. **OK**.
+5. Pick **CC Tools** from that menu. It will offer to download itself — say yes.
 
-No dependencies. Two files: the loader inside Vectorworks, and the program in
-`~/Documents/CC Tools/app/`.
+That is the whole install. There is no terminal, no download to unzip, and
+nothing to drag into a system folder.
 
-### Why a loader and not just the script
+What step 5 does: it fetches `cc_tools.py` and `JOB-SPEC.md` from this
+repository into `~/Documents/CC Tools/`, checks the program against the
+checksum published with it, and starts. From then on CC Tools updates itself
+and the Plug-in Manager is never needed again.
+
+### Why a loader and not the whole program
 
 Vectorworks cannot reload a plug-in's code in a running session. There is no
 API for it — `ReloadPlugin`, `RegisterPlugin`, `SetPluginScript` and six other
 spellings return nothing across the application binary and all 128 of its
-library bundles — and its own Plug-in Manager says installing a plug-in needs a
-restart.
+library bundles — and its own Plug-in Manager says installing a plug-in needs
+a restart.
 
-So if the code lived inside the plug-in, every update would mean quitting
+So if the program lived inside the plug-in, every update would mean quitting
 Vectorworks. Keeping it in a plain file means an update is one file replaced,
-and it takes effect the next time you pick **CC Tools** from the menu.
+effective the next time you pick **CC Tools** from the menu.
 
-If that file is ever broken or missing the loader says so plainly, and falls
-back to the previous version if one is there.
+The loader also pastes in a few seconds. The program is 8,000 lines.
+
+### If something goes wrong
+
+- **It says it cannot reach GitHub.** You are offline, or a firewall is in the
+  way. Nothing was installed and nothing is broken; try again later, or copy
+  `cc_tools.py` into `~/Documents/CC Tools/app/` by hand and it will start.
+- **It says the download does not match its checksum.** It refused to install
+  something it could not verify. That is the tool working correctly, not a
+  fault — tell Ryan.
+- **It starts but says it fell back to the previous version.** An update left
+  a bad file. It is running the copy it kept; delete
+  `~/Documents/CC Tools/app/cc_tools.py` and run it again for a fresh one.
 
 ### Updating
 

@@ -253,11 +253,43 @@ relaunch the application either.
 
 So the pasted plug-in is a **loader stub** (`tools/stub.py`) and this file is a
 **payload** it reads and `exec()`s. An update replaces one plain `.py` and takes
-effect on the next menu click. The alternative was patching the `.vsm`, which is
-possible — it is an `MCVS` container storing the script as plain UTF-8, mode 644
-in `~/Library`, with no checksum over the script — but it would need a restart
-*and* it races Vectorworks, which holds the pasted script in memory and was
-observed rewriting `CC Tools.vsm` mid-session.
+effect on the next menu click.
+
+The stub also **bootstraps the install**: on a first run with no payload it
+offers to fetch this file and `JOB-SPEC.md` from the repository, so the whole
+install is one paste. That is deliberately done from inside Vectorworks rather
+than by a downloadable installer — Vectorworks is already an app the user has
+approved, so it sidesteps Gatekeeper, the quarantine flag on anything
+downloaded, and macOS's privacy protection on `~/Documents`, each of which
+would otherwise put a dialog in front of a non-technical drafter.
+
+The cost is that the stub carries its own copy of the TLS and verification
+logic, which can drift from this file's. `t38_stub.py` pins them together: the
+repository, branch, CA bundle list and the `CC_TOOLS_PAYLOAD` contract are all
+asserted equal across the two files, so drift fails the suite rather than
+shipping. The alternative was shipping a prebuilt `.vsm`, which is **more viable than it
+sounds**: the container is fully portable. Every non-zero header byte is
+accounted for and none is machine-specific — no paths, usernames, serials,
+licence ids, UUIDs or timestamps — the 3,225-byte trailer is byte-identical
+across plug-ins and holds only zero padding and four copies of a generic icon,
+and there is no checksum. The only constraint found is a major-version stamp at
+**offset 134** (uint16 LE): 13 on VW2023, 14 on VW2025, 16 on VW2026.
+
+It was still not taken, because it does not remove a step that matters. It
+needs Vectorworks closed while the file is copied — the application holds the
+pasted script in memory and was observed rewriting `CC Tools.vsm` mid-session —
+and it needs a restart afterwards, since plug-ins are enumerated at startup. So
+it trades "paste a short script" for "quit, install, relaunch", and adds a
+binary artefact to the repository that has to be rebuilt by hand. Worth
+revisiting only if the paste step turns out to be the thing people get wrong.
+
+The workspace menu step could also be automated, but **not** by editing the
+`.vww` XML: the workspace is plain XML and names items by `UniversalName`, but
+each carries a `ResourceManagerID` that is assigned at runtime and is not
+stable, so a hand-written entry can bind to the wrong command. Vectorworks'
+own `ws*` routines are the supported route. It is left manual anyway, because
+a plug-in cannot run to fix the workspace until it is already in the
+workspace.
 
 **`vs.InstallCertificate()` must never be called.** Vectorworks' own shipped
 uploaders (`ExportWebGl`, `OBJExporter`) call it, and the bootstrap embedded in

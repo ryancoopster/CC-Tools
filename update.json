@@ -1,12 +1,10 @@
 {
-  "version": "0.9.1",
+  "version": "0.9.2",
   "bytes": 377813,
-  "sha256": "3e2d2e4d3981fdfc107787766c054764c6cf63aa8fc667f7d5d056f5e2e58c6a",
+  "sha256": "96c7406ec4e956c6105aa7c336c0abea631ad9951f97c70f2e0bde678eeba178",
   "min_stub": 1,
   "notes": [
-    "Checks GitHub for updates, with an interval you choose and release notes before you install",
-    "Copy JOB-SPEC.md to the clipboard from the launcher",
-    "Merge device-database entries whose make and model collide, keeping the fuller socket list",
-    "Docs: the alignment premise is gone, and the beta/backup caution is where you see it before installing"
+    "One-paste install: the loader now downloads CC Tools and JOB-SPEC.md itself on first run, verified against the published checksum",
+    "The loader falls back to the previous version if an update leaves a bad file"
   ]
 }

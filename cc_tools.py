@@ -40,7 +40,7 @@ BASE_FOLDER = os.path.expanduser('~/Documents/CC Tools')
 # The running version. The update check compares this against the version
 # published in update.json at the top of the repository, so the two must be
 # bumped together -- tools/release.py does both and refuses to do one.
-CC_TOOLS_VERSION = '0.9.1'
+CC_TOOLS_VERSION = '0.9.2'
 
 TYPE_GROUP = 11
 TYPE_PIO   = 86
