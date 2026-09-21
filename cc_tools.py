@@ -5174,7 +5174,7 @@ def ask_find_replace():
     return chosen
 
 
-def choose_replacements(candidates, find, replacement):
+def choose_replacements(candidates, find, replacement, collisions=None):
     """Show every proposed change. Returns the ticked ones, or None if cancelled.
 
     Everything starts ticked: the user asked for these, and having to tick 200
@@ -5195,10 +5195,20 @@ def choose_replacements(candidates, find, replacement):
     vs.CreateLB(dlg, gLB, 124, 24)
     vs.CreatePushButton(dlg, gAllBtn, 'Tick all')
     vs.CreatePushButton(dlg, gNoneBtn, 'Untick all')
+    warning = ''
+    if collisions:
+        warning = ('\n\nWARNING: {} device(s) would end up with two sockets of '
+                   'the same name\n({}). Nothing stops that, but a reference to '
+                   'the name can no longer\nsay which socket it means -- untick '
+                   'those rows if it was not intended.'.format(
+                       len(collisions),
+                       ', '.join('{} / {}'.format(d, n)
+                                 for d, n in sorted(collisions)[:4])))
     vs.CreateStaticText(
         dlg, gHintTxt,
         'Only ticked rows are changed. Equipment items and panel references\n'
-        'follow a device rename automatically and are not listed here.', -1)
+        'follow a device rename automatically and are not listed here.{}'
+        .format(warning), -1)
 
     vs.SetFirstLayoutItem(dlg, gCountTxt)
     vs.SetBelowItem(dlg, gCountTxt, gLB, 0, 0)
@@ -5281,39 +5291,28 @@ def tool_find_replace():
         vs.AlrtDialog('No matches for "{}".'.format(asked['find']))
         return 'done', None
 
-    picked = choose_replacements(candidates, asked['find'], asked['replace'])
+    # Socket names only have to be unique WITHIN their device, so a replace can
+    # quietly collapse two onto one -- 'LAN_IN A' and 'LAN_IN B' both becoming
+    # 'LAN_IN A'. Every other writing tool checks for this. It is shown in the
+    # table rather than raised afterwards: a warning you can still act on beats
+    # a dialog between you and the thing you already approved.
+    _w, collision_parents = walk_document(with_parents=True)
+    collisions = find_socket_collisions(
+        [make_edit(c['handle'], c['kind'], c['field'], c['old'], c['new'],
+                   c['is_link_name']) for c in candidates],
+        collision_parents)
+
+    picked = choose_replacements(candidates, asked['find'], asked['replace'],
+                                 collisions)
     if picked is None:
         return 'cancelled', None
     if not picked:
         return 'done', None
 
-    edits = [make_edit(c['handle'], c['kind'], c['field'], c['old'], c['new'],
-                       c['is_link_name']) for c in picked]
-
-    # Socket names only have to be unique WITHIN their device, so a replace can
-    # quietly collapse two of them onto one name -- 'LAN_IN A' and 'LAN_IN B'
-    # both becoming 'LAN_IN A'. Every other writing tool checks this; this one
-    # did not. Asked rather than refused: the user may be deliberately merging.
-    _w, collision_parents = walk_document(with_parents=True)
-    collisions = find_socket_collisions(edits, collision_parents)
-    if collisions:
-        listing = '\n'.join(
-            '   {} would have two sockets called "{}"'.format(device, name)
-            for (device, name) in sorted(collisions)[:8])
-        if len(collisions) > 8:
-            listing += '\n   ... and {} more'.format(len(collisions) - 8)
-        if vs.AlertQuestion(
-                '{} device(s) would end up with two sockets of the same '
-                'name.'.format(len(collisions)),
-                '{}\n\nA socket name only has to be unique within its device, '
-                'so nothing will stop this -- but any reference to that name '
-                'can no longer say which socket it means.\n\nReplace '
-                'anyway?'.format(listing),
-                1, 'Replace anyway', 'Cancel', '', '') != 1:
-            return 'cancelled', None
-
     # From here on nothing else is asked. The user has seen every change and
     # said yes to it.
+    edits = [make_edit(c['handle'], c['kind'], c['field'], c['old'], c['new'],
+                       c['is_link_name']) for c in picked]
 
     # References to a renamed device follow it, if asked for. Planned AFTER
     # the choice, so unticking a rename drops its follow-on edits with it.

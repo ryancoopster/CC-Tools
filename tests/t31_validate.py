@@ -58,7 +58,9 @@ check('T3 separate sections are not overlaps',
 # ── T4: signals are checked against ConnectCAD's vocabulary ──────────────
 known = m.known_signals()
 if known:
-    check('T4 the shipped vocabulary loads', len(known) >= 79, '%d' % len(known))
+    # 79 rows in the shipped file, ten of which are category headings and not
+    # signals, plus whatever the user library adds.
+    check('T4 the shipped vocabulary loads', len(known) >= 69, '%d' % len(known))
     check('T4 a standard signal is known', 'LINE' in known and 'LAN' in known)
     bad = {'devices': [], 'circuits': [
         {'from': {'device': 'a', 'socket': 'x'},

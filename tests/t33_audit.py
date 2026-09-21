@@ -89,9 +89,13 @@ for action in ('ACTION_SPELL_REVIEW', 'ACTION_SPELL_EXPORT', 'ACTION_SPELL_ALL')
 # ── T5: Find and Replace has the socket-collision guard ──────────────────
 replace = inspect.getsource(m.tool_find_replace)
 check('T5 collisions are checked', 'find_socket_collisions' in replace)
-check('T5 before anything is written',
-      replace.index('find_socket_collisions') < replace.index('apply_edits('),
-      'checking afterwards would be checking the damage')
+check('T5 before the table, not after it',
+      replace.index('find_socket_collisions') < replace.index('choose_replacements('),
+      'a warning you can still act on beats a dialog after you approved')
+check('T5 and it is shown IN the table',
+      'collisions)' in replace[replace.index('choose_replacements('):
+                               replace.index('choose_replacements(') + 120],
+      'no pop-up between hitting Replace and the change happening')
 
 DOC = Doc([[
     Obj('Device', {'name': 'AMP', 'tag': 'AMP'},
