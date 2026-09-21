@@ -1,8 +1,12 @@
 # CC Tools
 
-A ConnectCAD naming utility for **Vectorworks 2026** — one Python menu command that tidies device names and display tags without breaking the links between objects.
+A ConnectCAD toolkit for **Vectorworks 2026** — one Python menu command that builds, searches and edits ConnectCAD drawings while keeping the links between objects pointing where they should.
 
-ConnectCAD ties most of its objects together **by name string**. Rename a schematic Device and its rack Equipment Item, panel layouts, panel connectors and circuit endpoints can quietly stop pointing at it. These tools do the renaming *and* carry every reference along with it.
+It does three kinds of work:
+
+- **Draws schematics.** Describe the system to Claude and hand it `JOB-SPEC.md`; it writes a job file. The plug-in reads that file and builds the devices, their connectors, the wiring between them and the sections they sit in.
+- **Finds what nothing else can.** Vectorworks' own Find and Replace cannot see inside plug-in object records, which is where a ConnectCAD drawing keeps everything worth finding. Search walks every field of every ConnectCAD object; Find and Replace changes them in bulk, with every proposed edit shown before anything is written.
+- **Keeps the links intact.** ConnectCAD ties most of its objects together **by name string**. Rename a schematic Device and its rack Equipment Item, panel layouts, panel connectors and circuit endpoints can quietly stop pointing at it. Every tool here does the renaming *and* carries the references it knows about along with it.
 
 ## What it does
 
@@ -23,6 +27,7 @@ The launcher is split in two: the tools used while drafting, and the ones used w
 | **Preferences** | Column spacing, row spacing, gap between sections, circuit line mode, device label symbol. |
 | **Export prompt for Claude** | Read-only. Writes a profile of how this drawing is built, to hand Claude so new work matches it. |
 | **Export Reference Schematic** | Read-only. Writes a signal-flow layer out as JSON — devices, their positions and sockets, and the real circuit wiring — for use as a worked example. |
+| **Creation Probe** | Diagnostic that **writes**. Builds a handful of throwaway devices and circuits to prove what this install's ConnectCAD actually lets a script do. Run it on a scratch file, never on real work. |
 
 Normalise runs before Match on purpose: uppercasing and trimming collapses every case-only and whitespace-only mismatch (`amp1` vs `AMP1`), so Match only asks about pairs that genuinely differ. Spell Check runs last, once every name has settled. Preferences run first, so ticking them alongside **Draw schematic job** draws with the settings you just saved.
 
@@ -68,7 +73,7 @@ per object type and an option to match the whole string rather than part of it.
 Whole-string is what lets you rename `SPK 1.01` without also hitting
 `SPK 1.010`.
 
-**Nothing is written until you have seen it.** Running the search produces a
+**No replacement is written until you have seen it listed.** Running the search produces a
 table of every proposed change — type, field, the current text and the text
 after replacing — with each row ticked. Untick what you don't want, press
 Replace, and it happens with no further prompts.
@@ -94,8 +99,8 @@ ConnectCAD itself is built. A menu command runs once and exits.
 
 So it works by snapshot and diff. Every plug-in object carries a persistent
 uuid, so CC Tools records each socket's uuid and name, and on the next run a
-uuid whose name has changed is a rename — reliably, without guessing from the
-names themselves. The panel connectors pointing at the old name are then
+uuid whose name has changed is a rename — known from the uuid, not guessed from
+the names themselves. The panel connectors pointing at the old name are then
 brought up to date, shown in the same review table as Find and Replace.
 
 The snapshot records the last **reconciled** state, not the last observed one,
@@ -123,11 +128,35 @@ But frequency only tells you what is **consistent**, not what is **correct** —
 
 Multi-word entries are replaced literally, which makes this a find-and-replace across ConnectCAD objects — the piece Vectorworks' own Find and Replace doesn't cover. The same list can also be exported to CSV and re-applied if you'd rather do bulk work in a spreadsheet.
 
-Every replacement is a **global token substitution**, not a per-object edit. Fixing a typo fixes it identically in the device, its tag, its equipment item and every reference at once — which is what keeps name-linked objects linked through the change.
+Every replacement is a **global token substitution**, not a per-object edit. Fixing a typo fixes it identically in the device, its tag, its equipment item and every reference it can reach at once — which is what keeps name-linked objects linked through the change.
 
 **Only free-text fields are touched:** names, display tags, user fields, and circuit labels. Dropdown values (connector, signal, cable type), library values (make, model, description), endpoint caches and room/rack references are all left alone — those are chosen from lists, not typed, so a "correction" there would just be a value the library rejects.
 
 Reports are written to `~/Documents/CC Tools/` under timestamped filenames, so runs never overwrite each other.
+
+## Before you run it
+
+**CC Tools is beta software, and it edits your open drawing directly.**
+
+**Save your file before every run, and keep backups you can go back to.** Not
+just once before the first run — before each one. A single run can rename
+hundreds of objects across a document, or draw a whole schematic, and there is
+no guarantee you can take that back: the plug-in does not group its work into
+one undo event, so how much a single Undo reverses is up to Vectorworks and the
+Plug-in Manager's settings, and has not been established. Assume you cannot rely
+on Undo to rescue a run you did not want.
+
+The safer first move on any unfamiliar drawing is to look before you write.
+**Dump Fields** changes nothing and reports what this drawing and this
+ConnectCAD build actually contain. **Normalise** and **Spell Check** have a
+**Preview only** box, **Match** defaults to **Export list only**, and **Search**
+never writes at all.
+
+This has been used on real drawings and it is covered by a large test suite, but
+it is not a finished product and it is not warranted. It is offered as is, with
+no guarantee that it is fit for any particular purpose. **The authors accept no
+responsibility for lost work, damaged files or any other loss arising from its
+use.** If a drawing matters, back it up before pointing this at it.
 
 ## Install
 
@@ -143,7 +172,7 @@ No dependencies, no files to install alongside it. The whole plug-in is that one
 
 Run **Dump Fields** first on any new drawing. It changes nothing, and its report tells you whether the field names and ConnectCAD routines this build expects are actually present.
 
-Both mutating tools default to **Selected objects only**, so nothing happens document-wide unless you ask. Linked partners are still resolved across the whole document either way, so a selection-scoped run never leaves an equipment item holding a stale name.
+Both mutating tools default to **Selected objects only**, so nothing happens document-wide unless you ask. Linked partners are still resolved across the whole document either way, so a selection-scoped run should not leave an equipment item holding a stale name.
 
 Match defaults to **Export list only**, which writes a CSV of every mismatch and changes nothing. Look at that before choosing a real action:
 
@@ -154,10 +183,6 @@ Match defaults to **Export list only**, which writes a CSV of every mismatch and
 Normalise and Spell Check both have a **Preview only** checkbox that reports what would change without touching the drawing.
 
 Spell Check keeps an ignore list at `~/Documents/CC Tools/spelling_ignore.txt`. Answering *Ignore always* adds a term to it, so a house abbreviation is only ever asked about once. Delete a line to start flagging it again.
-
-## Status: alpha
-
-This works and has been used on real drawings, but it is early software that edits your document directly. Keep a backup, and use **Preview only** or **Export list only** the first time you point a tool at an unfamiliar file.
 
 ## Designing a schematic with Claude
 

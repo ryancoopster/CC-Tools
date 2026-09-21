@@ -17,6 +17,13 @@ the job does not carry them. Without the copy, a device gets its physical data
 only if ConnectCAD's own database happens to know it, which for most real
 equipment it does not.
 
+**Before you draw a job: save your Vectorworks file, and keep a backup.** CC
+Tools is beta software that builds into your open drawing directly, and a job
+can create hundreds of objects in one run. The plug-in does not group a run
+into a single undo event, so do not count on Undo to take one back. It is
+offered as is, with no warranty, and **the authors accept no responsibility for
+lost work or damaged files.**
+
 ---
 
 ## Your job, Claude
@@ -248,8 +255,10 @@ So a column of one-socket speakers starts at `y: 0` and steps `-1.25`, `-2.5`,
 Columns are 4 in apart unless you have a reason otherwise, and a device is
 3 in wide, so `x: 0`, `x: 4`, `x: 8`.
 
-Put the resulting `x` and `y` on every device. Then the preview you show is
-exactly what gets drawn, which is the point of showing it.
+Put the resulting `x` and `y` on every device. Then the preview you show is the
+layout the plug-in draws, which is the point of showing it. One thing you cannot
+preview exactly: where a `make`/`model` matches a device symbol already in the
+drawing, that symbol is stamped instead, at its own size.
 
 *(If you give `column` and `row` instead, the plug-in stacks that column for
 you using the same rule. Useful, but then the preview is your guess at what it

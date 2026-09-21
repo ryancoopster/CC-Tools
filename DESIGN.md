@@ -17,7 +17,7 @@ which always run in a fixed order whatever order you tick them.
 
 | | Tool | |
 |---|---|---|
-| *drafting* | Normalise Names | uppercase / trim, links kept intact |
+| *drafting* | Normalise Names | uppercase / trim, links updated with the name |
 | | Match Names and Display Tags | reconcile Name vs Display Tag |
 | | Spell Check | typos and reviewable find-and-replace |
 | | Search ConnectCAD Objects | read-only, every field |
@@ -28,7 +28,7 @@ which always run in a fixed order whatever order you tick them.
 | | Export prompt for Claude | document profile |
 | | Dump Fields | read-only diagnostic |
 | | Export Reference Schematic | read-only, drawing as JSON |
-| | Creation Probe | writes — scratch files only |
+| | Creation Probe | writes — run it on a scratch file |
 
 All output goes to `~/Documents/CC Tools/` under timestamped filenames.
 
@@ -267,10 +267,13 @@ settled only once every reference to the old name has been updated.
 
 ## Safety properties
 
-All exercised by the test suite:
+Design intent, exercised by the test suite against the mock `vs` module. What
+has and has not been confirmed in a live drawing is below.
 
 - **Plan → check → write.** Nothing is written until every edit is planned and
-  the checks pass, so an abort leaves the drawing untouched.
+  the checks pass, so an abort *during planning* leaves the drawing untouched.
+  Once writing has begun there is no rollback of its own — an error mid-write
+  stops the chain and reports, but what was already written stays written.
 - **Whole-document link resolution**, even when scope is "selected objects only"
   — equipment lives on rack layers while devices live on schematic layers.
 - **All writes precede the resets**, and sockets reset *after* their parent so a
@@ -303,8 +306,12 @@ file dialog, the job path end to end, and that alignment is not required.
 
 Still unverified against a live document:
 
-- **Undo** — whether one run reverts as a single event depends on the Plug-in
-  Manager's undo setting.
+- **Undo.** The plug-in never calls `BeginUndoEvent`/`EndUndoEvent`, so a run
+  is not grouped into one undo event by anything here; how much a single Undo
+  takes back is left to Vectorworks and the Plug-in Manager's undo setting, and
+  has not been established. Several tools tell the user to "Undo afterwards" —
+  that advice rests on an untested assumption. It is the reason the user-facing
+  docs say to save and back up before every run rather than relying on Undo.
 - **`ControlPoint03X`** as the elbow distance — inferred from two samples.
 - **The device label symbol.** Swapping it goes through
   `Utilities::ChangeDevLabelSymbol`, reachable only from the OIP path, so a

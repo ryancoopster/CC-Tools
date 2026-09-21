@@ -19,7 +19,15 @@ back a file.
 4. **In Vectorworks: CC Tools ▸ Draw schematic job.** A file dialog opens.
    Pick the file you just downloaded. It draws.
 
-Undo works normally if the result isn't what you wanted.
+**Save the drawing before step 4.** Undo should reverse a draw that isn't what
+you wanted, but it is not a backup and it is not something to rely on: the
+plug-in does not group a run into a single undo event, so how much one Undo
+takes back has never been established. A saved file is the thing that always
+works.
+
+CC Tools is beta software that edits your open drawing directly. It is offered
+as is, with no warranty, and **the authors accept no responsibility for lost
+work or damaged files.**
 
 ## The curated device list
 
@@ -72,7 +80,7 @@ layer in the order the job lists them, separated by the gap set in
 **Preferences**.
 
 Two things follow from bands being separate regions of the drawing, and the
-tool checks both rather than drawing something that cannot work:
+tool checks for both before it draws:
 
 - **A circuit cannot cross sections.** Its two ends would be nowhere near each
   other, so it could never wire.
@@ -145,7 +153,9 @@ Every run writes a timestamped report to `~/Documents/CC Tools/`. It records:
 
 That last number is **read back from the drawing**, not counted from the job.
 `ConnectSelected` returning cleanly proves nothing, so the tool goes and looks.
-Anything listed as `NOT WIRED` genuinely isn't.
+Anything listed as `NOT WIRED` genuinely isn't. The converse does not hold: a
+circuit counted as wired may still have landed on the wrong socket, so look at
+the drawing too.
 
 ## Troubleshooting
 

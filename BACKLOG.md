@@ -166,7 +166,8 @@ it from history rather than rewriting it, and test it before trusting it.
 ### The audit — 23 findings, all fixed
 
 A six-dimension adversarial review of the whole plug-in, after find-and-replace
-was found to break links. Everything it caught is fixed and covered by tests; the
+was found to break links. Everything it caught is fixed and covered by tests --
+one adversarial pass over one version, not a proof of correctness. The
 structural lessons are written into DESIGN.md rather than repeated here. The
 themes, so the same classes of bug get looked for next time:
 
