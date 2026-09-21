@@ -1,9 +1,9 @@
 {
-  "version": "0.9.5",
-  "bytes": 385491,
-  "sha256": "e321df351ee1b805114585817cc4e5a7851d83cba496f4ac07b984fd4bd0b491",
+  "version": "0.9.7",
+  "bytes": 386438,
+  "sha256": "b25378f6179d4959da02f1186ab9093496c70c474fce18ee2bfd48116c18c12d",
   "min_stub": 1,
   "notes": [
-    "Installing an update now closes CC Tools, so the next launch runs the new version"
+    "After installing an update the launcher switches itself off and says so at once, instead of letting you run the old version"
   ]
 }

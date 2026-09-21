@@ -564,10 +564,13 @@ vs.RunLayoutDialog = click_update_then_continue
 picked = m.ask_which_tools()
 check('T14 ticking tools after an update runs none of them',
       picked is None, picked)
-check('T14 and the user is told CC Tools has closed',
-      any('has closed' in a for a in alerts), alerts)
+check('T14 and the user is told to close the window',
+      any('Close this window' in a for a in alerts), alerts)
 check('T14 and told to pick it again',
       any('menu again' in a for a in alerts), alerts)
+check('T14 the message is honest that the run stopped, not that it closed',
+      any('stopped' in a for a in alerts)
+      and not any('has closed' in a for a in alerts), alerts)
 check('T14 the status line reported the update too',
       'Updated' in texts.get(m.lSpecTxt, ''), texts.get(m.lSpecTxt))
 
@@ -597,6 +600,49 @@ check('T14 and says so without an alert',
       not any('has closed' in a for a in alerts), alerts)
 
 vs.SetItemText = _set
+
+
+# ── T15: after an update the launcher is visibly switched off ─────────────
+check('T15 TOOL_CHECKBOXES covers every tool tick-box in the launcher',
+      set(m.TOOL_CHECKBOXES) == {m.lDumpChk, m.lNormChk, m.lMatchChk,
+                                 m.lSpellChk, m.lRefChk, m.lProbeChk,
+                                 m.lPromptChk, m.lJobChk, m.lPrefsChk,
+                                 m.lSearchChk, m.lReplaceChk, m.lReconChk},
+      sorted(set(m.TOOL_CHECKBOXES)))
+check('T15 and there are exactly twelve, one per tool',
+      len(set(m.TOOL_CHECKBOXES)) == 12, len(set(m.TOOL_CHECKBOXES)))
+
+clean()
+m.save_prefs(dict(m.PREF_DEFAULTS, check_for_updates=True,
+                  update_interval_days=0.0))
+m.save_update_state(dict(m.UPDATE_STATE_DEFAULTS, consent_asked=True))
+m.install_update = lambda src: (True, '')
+stub_fetch(payload=GOOD, manifest=good_manifest)
+vs.enabled = {}
+alerts = []
+vs.AlrtDialog = lambda text: alerts.append(text)
+
+
+def click_update_only(dlg, handler):
+    handler(12255, 0)
+    vs.answers = [m.UPDATE_ANSWER_NOW]
+    handler(m.lUpdBtn, 0)
+    handler(1, 0)
+    return 1
+
+
+vs.RunLayoutDialog = click_update_only
+m.ask_which_tools()
+check('T15 every tick-box is disabled after an update',
+      all(vs.enabled.get(box) is False for box in m.TOOL_CHECKBOXES),
+      {b: vs.enabled.get(b) for b in m.TOOL_CHECKBOXES})
+check('T15 and so is the update button, so it cannot be run twice',
+      vs.enabled.get(m.lUpdBtn) is False, vs.enabled.get(m.lUpdBtn))
+check('T15 the user is told at once, not after closing the window',
+      any('Close this window' in a for a in alerts), alerts)
+check('T15 and the message does not claim the window closed itself',
+      not any('has closed' in a for a in alerts), alerts)
+check('T15 it is said once, not twice', len(alerts) == 1, alerts)
 
 clean()
 R.report_and_exit()

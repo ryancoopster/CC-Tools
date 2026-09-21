@@ -221,10 +221,14 @@ When there is a new version you get the release notes and three choices:
 **Check for updates** button at the bottom of the launcher, which ignores both
 the interval and anything you skipped.
 
-**Installing an update closes CC Tools.** The new code is on disk, but
+**Installing an update ends that run.** The new code is on disk, but
 Vectorworks is still holding the old one in memory and nothing can reload it —
-so carrying on would run the version you just replaced. Pick CC Tools from the
-menu again and you are on the new one.
+so carrying on would run the version you just replaced. The launcher greys
+itself out and tells you straight away; close it and pick CC Tools from the
+menu again to be on the new version.
+
+It cannot shut its own window: Vectorworks has no routine for closing a dialog
+from a script. One click more than we would like, and not avoidable.
 
 Downloads are verified before they are installed — byte count, SHA-256, and
 whether the file compiles — and the version being replaced is kept alongside

@@ -271,6 +271,12 @@ def build_vs(doc, selected=()):
     def CreateEditText(dlg, item, text, width):
         state['text'][item] = text
 
+    def EnableItem(dlg, item, state):
+        v.enabled[item] = bool(state)
+
+    def ShowItem(dlg, item, state):
+        v.shown[item] = bool(state)
+
     def SetItemText(dlg, item, text):
         allowed = v.text_width.get(item)
         if allowed is not None:
@@ -335,6 +341,8 @@ def build_vs(doc, selected=()):
     v.cc_rename_works = True
     v.choices = {}
     v.text_width = {}
+    v.enabled = {}
+    v.shown = {}
     v.menu_width = {}
     v.classes = set()
     v.active_class = 'None'

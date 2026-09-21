@@ -40,7 +40,7 @@ BASE_FOLDER = os.path.expanduser('~/Documents/CC Tools')
 # The running version. The update check compares this against the version
 # published in update.json at the top of the repository, so the two must be
 # bumped together -- tools/release.py does both and refuses to do one.
-CC_TOOLS_VERSION = '0.9.5'
+CC_TOOLS_VERSION = '0.9.7'
 
 TYPE_GROUP = 11
 TYPE_PIO   = 86
@@ -8730,8 +8730,9 @@ def offer_update(manifest, state):
     kept = '\nThe previous version is kept at {}'.format(detail) if detail else ''
     if spec_note and spec_note != 'device list updated':
         kept += '\n\n' + spec_note
-    return True, ('Updated to {}. CC Tools has closed.\n\n'
-                  'Pick it from the menu again to start the new version.{}'
+    return True, ('Updated to {}. This run has stopped, because it is still '
+                  'holding the old version.\n\nPick CC Tools from the menu '
+                  'again to start the new one.{}'
                   .format(manifest['version'], kept)), state
 
 
@@ -8806,6 +8807,10 @@ lSearchChk, lReplaceChk, lReconChk = 317, 318, 319
 lOrderTxt, lHintTxt = 308, 309
 lSpecBtn, lSpecTxt = 320, 321
 lUpdBtn = 322
+
+# Every tool tick-box, so an update can switch the whole launcher off in one
+# pass without a list that quietly goes stale when a tool is added.
+TOOL_CHECKBOXES = (305, 306, 307, 310, 311, 312, 313, 314, 315, 317, 318, 319)
 
 
 def ask_which_tools():
@@ -8901,8 +8906,23 @@ def ask_which_tools():
                 # The new code is on disk, but this interpreter is still
                 # holding the old one and nothing can reload it. Carrying on
                 # from here would run the version that was just replaced,
-                # against a real drawing. So the run ends instead.
+                # against a real drawing.
+                #
+                # Vectorworks has no routine to close a layout dialog from
+                # code -- all 2,269 core routines were checked, and the only
+                # Close* ones are for text files, worksheets, PDFs and movies.
+                # So the launcher cannot shut itself. It is switched off
+                # instead: every tick-box cleared and disabled, so what is on
+                # screen matches what will happen, and the user is told at
+                # once rather than after they close it.
                 chosen['updated'] = True
+                for box in TOOL_CHECKBOXES:
+                    vs.SetBooleanItem(dlg, box, False)
+                    vs.EnableItem(dlg, box, False)
+                vs.EnableItem(dlg, lUpdBtn, False)
+                vs.AlrtDialog(
+                    '{}\n\nClose this window, then pick CC Tools from the '
+                    'menu again to start it.'.format(status))
         elif item == lSpecBtn:
             # A push button reports and leaves the dialog open, so the result
             # goes to the line under it rather than to an alert the user would
@@ -8945,11 +8965,7 @@ def ask_which_tools():
 
     answer = vs.RunLayoutDialog(dlg, handler)
     if chosen.get('updated'):
-        # Whichever button closed the dialog, an update was installed and this
-        # session is still running the old code. Say so and stop.
-        vs.AlrtDialog(
-            'CC Tools has been updated and has closed.\n\n'
-            'Pick CC Tools from the menu again to start the new version.')
+        # Already explained when it happened; saying it twice would be nagging.
         return None
     if answer != kOK:
         return None

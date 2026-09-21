@@ -312,7 +312,12 @@ count and a SHA-256, checked along with `compile()` before anything is written,
 and the write is a temp file plus `os.replace` so the live file is never
 half-written.
 
-**An installed update ends the run**, on both paths. The automatic check runs
+**An installed update ends the run**, on both paths — but the launcher cannot
+close itself. All 2,269 core routines were checked: the only `Close*` ones are
+for text files, worksheets, PDFs and QuickTime movies, and there is nothing
+that dismisses a modal layout dialog. So it clears and disables every tick-box
+via `EnableItem`, disables the update button, and alerts immediately, so the
+window that stays on screen matches what will actually happen. The automatic check runs
 before the launcher and returns; the manual button sets a flag so that
 whichever button closes the dialog, no tool is selected and the run stops with
 "CC Tools has been updated and has closed." Without that flag a user could
