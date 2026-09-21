@@ -141,7 +141,7 @@ def build_vs(doc, selected=()):
             cb(o)
 
     def GetFName():
-        return 'MOCK.vwx'
+        return v.file_name
 
     def AlrtDialog(msg):
         v.alerts.append(msg)
@@ -259,6 +259,11 @@ def build_vs(doc, selected=()):
     def GetItemText(dlg, item):
         return state['text'].get(item, '')
 
+    # Persistent object identity. Real Vectorworks hands every plug-in object
+    # a uuid and offers no setter, so the mock derives a stable one too.
+    def GetObjectUuid(h):
+        return 'uuid-%d' % id(h) if isinstance(h, Obj) else ''
+
     # ConnectCAD's own rename. Tests set v.cc_rename_works to False to
     # simulate a session with no ConnectCAD licence, where the real routine is
     # a silent no-op.
@@ -300,6 +305,7 @@ def build_vs(doc, selected=()):
     v.file_choice = ''
     v.dialog_calls = []
     v.cc_renames = []
+    v.file_name = 'MOCK.vwx'
     v.cc_rename_works = True
     v.choices = {}
     v.classes = set()

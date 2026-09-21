@@ -93,6 +93,7 @@ TOOL_JOB       = 7
 TOOL_PREFS     = 8
 TOOL_SEARCH    = 9
 TOOL_REPLACE   = 10
+TOOL_RECONCILE = 11
 
 kOK    = 1
 kSetup = 12255
@@ -5140,6 +5141,220 @@ def validate_job_path(path):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# TOOL: RECONCILE PANEL CONNECTORS  (writes)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# ConnectCAD does not push a schematic socket rename out to the panel
+# connectors that point at it. Rename a socket in the OIP and the panel keeps
+# showing the old name, with no warning.
+#
+# CC Tools cannot watch for that as it happens. There is no timer, no idle
+# handler, no document-level event hook and no modeless dialog in the
+# VectorScript API -- observing another vendor's plug-in object needs the C++
+# SDK, which is how ConnectCAD itself is built. A menu command runs once and
+# exits.
+#
+# What IS available is stable identity: vs.GetObjectUuid gives every plug-in
+# object a persistent id. So this takes a SNAPSHOT of every socket's uuid and
+# name, and on the next run compares: a uuid whose name has changed is a
+# rename, and its panel connectors can be brought along. Poll and diff, rather
+# than watch.
+#
+# The snapshot is refreshed at the end of every CC Tools run, so the window it
+# covers is "since you last used these tools" without anyone having to
+# remember to take one.
+
+SNAPSHOT_FILE = 'socket_snapshot.json'
+
+
+def snapshot_path():
+    return os.path.join(BASE_FOLDER, SNAPSHOT_FILE)
+
+
+def object_uuid(handle):
+    """A persistent id for a plug-in object, or '' if unavailable.
+
+    Read-only -- there is no script-level setter -- so this is an identity the
+    drawing hands out, not one we impose."""
+    routine = getattr(vs, 'GetObjectUuid', None)
+    if routine is None:
+        return ''
+    try:
+        value = routine(handle)
+    except Exception:
+        return ''
+    if isinstance(value, (tuple, list)):
+        value = next((v for v in value if isinstance(v, str)), '')
+    return (value or '').strip()
+
+
+def snapshot_sockets(handles=None, parents=None):
+    """{uuid: {'name':…, 'device':…}} for every socket that has a uuid."""
+    if handles is None or parents is None:
+        handles, parents = walk_document(with_parents=True)
+    out = {}
+    for handle in handles:
+        if classify(handle) != 'socket':
+            continue
+        uuid = object_uuid(handle)
+        if not uuid:
+            continue
+        field = resolve_field(handle, SOCKET_NAME_FIELDS)
+        name = read_field(handle, field) if field else ''
+        if is_unnamed(name):
+            continue
+        device = owning_device(handle, parents)
+        device_field = resolve_field(device, DEVICE_NAME_FIELDS) if device else None
+        out[uuid] = {
+            'name': name,
+            'device': read_field(device, device_field) if device_field else '',
+        }
+    return out
+
+
+def save_socket_snapshot(sockets=None):
+    """Record the current socket names. Returns how many were recorded.
+
+    Keyed by document, so two drawings open in turn do not read each other's
+    history as a pile of renames."""
+    import json
+    if sockets is None:
+        sockets = snapshot_sockets()
+    try:
+        stored = load_snapshot_file()
+        stored[current_document_key()] = sockets
+        os.makedirs(BASE_FOLDER, exist_ok=True)
+        with open(snapshot_path(), 'w', encoding='utf-8') as f:
+            json.dump(stored, f, indent=1)
+    except Exception:
+        return 0
+    return len(sockets)
+
+
+def current_document_key():
+    try:
+        return vs.GetFName() or '(unsaved)'
+    except Exception:
+        return '(unknown)'
+
+
+def load_snapshot_file():
+    import json
+    try:
+        with open(snapshot_path(), 'r', encoding='utf-8') as f:
+            stored = json.load(f)
+    except Exception:
+        return {}
+    return stored if isinstance(stored, dict) else {}
+
+
+def load_socket_snapshot():
+    """The snapshot for THIS document, or {} if there is none."""
+    return load_snapshot_file().get(current_document_key(), {}) or {}
+
+
+def find_socket_renames(handles, parents, snapshot):
+    """Sockets whose uuid is known but whose name has changed since.
+
+    Returns [{'handle', 'old', 'new', 'device'}]. A uuid that has vanished is
+    a deleted socket, not a rename, and is ignored -- there is nothing to
+    carry forward."""
+    renames = []
+    for handle in handles:
+        if classify(handle) != 'socket':
+            continue
+        uuid = object_uuid(handle)
+        was = snapshot.get(uuid) if uuid else None
+        if not was:
+            continue
+        field = resolve_field(handle, SOCKET_NAME_FIELDS)
+        now = read_field(handle, field) if field else ''
+        if is_unnamed(now) or now == was.get('name'):
+            continue
+        renames.append({'handle': handle, 'field': field,
+                        'old': was.get('name', ''), 'new': now,
+                        'device': was.get('device', '')})
+    return renames
+
+
+def tool_reconcile_panels():
+    """Returns (status, summary)."""
+    snapshot = load_socket_snapshot()
+    handles, parents = walk_document(with_parents=True)
+
+    if not snapshot:
+        recorded = save_socket_snapshot(snapshot_sockets(handles, parents))
+        vs.AlrtDialog(
+            'No earlier record of this drawing, so there is nothing to compare '
+            'against yet.\n\n{} socket(s) recorded just now. Rename sockets as '
+            'you normally would, then run this again and the panel connectors '
+            'pointing at them will be brought up to date.'.format(recorded))
+        return 'done', None
+
+    renames = find_socket_renames(handles, parents, snapshot)
+    if not renames:
+        save_socket_snapshot(snapshot_sockets(handles, parents))
+        vs.AlrtDialog('No socket has been renamed since the last run, so every '
+                      'panel connector is already current.')
+        return 'done', None
+
+    # The sockets have already been renamed -- these stand in for edits that
+    # happened outside the tool, purely so the sync planner can work out what
+    # points at them. Only the references it returns are written.
+    stand_ins = [make_edit(r['handle'], 'socket', r['field'], r['old'],
+                           r['new'], True) for r in renames]
+    sync_edits, _used = plan_link_sync(stand_ins, parents)
+    sync_edits = dedupe_edits(stand_ins, sync_edits)
+
+    if not sync_edits:
+        save_socket_snapshot(snapshot_sockets(handles, parents))
+        vs.AlrtDialog(
+            '{} socket(s) were renamed, but nothing points at them by name, so '
+            'there is nothing to bring up to date.'.format(len(renames)))
+        return 'done', None
+
+    candidates = [{'handle': e['handle'], 'kind': e['kind'],
+                   'field': e['field'], 'old': e['old'], 'new': e['new'],
+                   'is_link_name': e['is_link_name'],
+                   'label': object_label(e['handle'], e['kind'], parents)}
+                  for e in sync_edits]
+    picked = choose_replacements(
+        candidates, 'the renamed socket names', 'their current names')
+    if picked is None:
+        return 'cancelled', None
+    if not picked:
+        save_socket_snapshot(snapshot_sockets(handles, parents))
+        return 'done', None
+
+    chosen = [make_edit(c['handle'], c['kind'], c['field'], c['old'], c['new'],
+                        c['is_link_name']) for c in picked]
+    applied = apply_edits(chosen)
+    reset = reset_circuits()
+    recorded = save_socket_snapshot(snapshot_sockets())
+
+    lines = report_header('RECONCILE PANEL CONNECTORS')
+    lines.append('Sockets renamed since the last run: {}'.format(len(renames)))
+    lines.append('References found:                   {}'.format(len(sync_edits)))
+    lines.append('Chosen:                             {}'.format(len(picked)))
+    lines.append('Applied:                            {}'.format(len(applied)))
+    lines.append('Circuits reset:                     {}'.format(reset))
+    lines.append('Snapshot refreshed:                 {} socket(s)'.format(recorded))
+    lines.append('')
+    lines.append('RENAMES DETECTED')
+    for r in renames[:40]:
+        lines.append('  {:<28} "{}" -> "{}"'.format(
+            (r['device'] or '?')[:28], r['old'], r['new']))
+    if len(renames) > 40:
+        lines.append('  ... and {} more'.format(len(renames) - 40))
+    lines.append('')
+    lines.append('REFERENCES UPDATED')
+    lines.extend(format_edits(applied))
+
+    save_text('reconcile_panels', '\n'.join(lines))
+    return 'done', None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # TOOL: FIND AND REPLACE  (writes)
 # ═══════════════════════════════════════════════════════════════════════════
 #
@@ -7625,7 +7840,7 @@ lRefChk = 311
 lProbeChk = 312
 lPromptChk, lJobChk = 313, 314
 lPrefsChk, lSetupLbl = 315, 316
-lSearchChk, lReplaceChk = 317, 318
+lSearchChk, lReplaceChk, lReconChk = 317, 318, 319
 lOrderTxt, lHintTxt = 308, 309
 
 
@@ -7645,6 +7860,8 @@ def ask_which_tools():
     vs.CreateCheckBox(dlg, lSpellChk, 'Spell Check')
     vs.CreateCheckBox(dlg, lSearchChk, 'Search ConnectCAD Objects  (read-only)')
     vs.CreateCheckBox(dlg, lReplaceChk, 'Find and Replace  (writes)')
+    vs.CreateCheckBox(dlg, lReconChk,
+                      'Reconcile Panel Connectors  (after renaming in the OIP)')
     vs.CreateCheckBox(dlg, lJobChk, 'Draw schematic job  (writes)')
 
     vs.CreateStaticText(dlg, lSetupLbl, 'Setup and diagnostics:', -1)
@@ -7669,7 +7886,8 @@ def ask_which_tools():
     vs.SetBelowItem(dlg, lMatchChk, lSpellChk, 0, 0)
     vs.SetBelowItem(dlg, lSpellChk, lSearchChk, 0, 0)
     vs.SetBelowItem(dlg, lSearchChk, lReplaceChk, 0, 0)
-    vs.SetBelowItem(dlg, lReplaceChk, lJobChk, 0, 0)
+    vs.SetBelowItem(dlg, lReplaceChk, lReconChk, 0, 0)
+    vs.SetBelowItem(dlg, lReconChk, lJobChk, 0, 0)
     vs.SetBelowItem(dlg, lJobChk, lSetupLbl, 0, 10)
     vs.SetBelowItem(dlg, lSetupLbl, lPrefsChk, 0, 0)
     vs.SetBelowItem(dlg, lPrefsChk, lPromptChk, 0, 0)
@@ -7695,6 +7913,7 @@ def ask_which_tools():
             vs.SetBooleanItem(dlg, lPrefsChk, False)
             vs.SetBooleanItem(dlg, lSearchChk, False)
             vs.SetBooleanItem(dlg, lReplaceChk, False)
+            vs.SetBooleanItem(dlg, lReconChk, False)
         elif item == kOK:
             picked = []
             # Fixed order, independent of which boxes the user ticked first.
@@ -7702,6 +7921,8 @@ def ask_which_tools():
             # should mean the job is drawn with the settings just saved.
             if vs.GetBooleanItem(dlg, lPrefsChk):
                 picked.append(TOOL_PREFS)
+            if vs.GetBooleanItem(dlg, lReconChk):
+                picked.append(TOOL_RECONCILE)
             if vs.GetBooleanItem(dlg, lSearchChk):
                 picked.append(TOOL_SEARCH)
             if vs.GetBooleanItem(dlg, lReplaceChk):
@@ -7741,6 +7962,7 @@ TOOL_RUNNERS = [
     (TOOL_PREFS, 'Preferences'),
     (TOOL_SEARCH, 'Search'),
     (TOOL_REPLACE, 'Find and Replace'),
+    (TOOL_RECONCILE, 'Reconcile Panel Connectors'),
 ]
 
 
@@ -7773,6 +7995,7 @@ def run_cc_tools():
         TOOL_PREFS: tool_preferences,
         TOOL_SEARCH: tool_search,
         TOOL_REPLACE: tool_find_replace,
+        TOOL_RECONCILE: tool_reconcile_panels,
     }
     names = dict((tool, name) for tool, name in TOOL_RUNNERS)
 
@@ -7793,6 +8016,15 @@ def run_cc_tools():
             if skipped:
                 note += ' Not run: {}.'.format(', '.join(skipped))
             break
+
+    # Record where the sockets stand now, so the next Reconcile has something
+    # to compare against. Done for every run rather than only after the
+    # reconcile tool: the window this covers should be "since you last used
+    # these tools", which nobody should have to maintain by hand.
+    try:
+        save_socket_snapshot()
+    except Exception:
+        pass
 
     if summaries or note:
         vs.AlrtDialog('\n\n'.join(summaries) + note)

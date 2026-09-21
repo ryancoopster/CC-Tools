@@ -18,6 +18,7 @@ The launcher is split in two: the tools used while drafting, and the ones used w
 | **Spell Check** | Finds likely typos in free-text fields, and doubles as a reviewable find-and-replace across every ConnectCAD object. |
 | **Search ConnectCAD Objects** | Read-only. Searches **every field** of every ConnectCAD object — the ones Vectorworks' own Find and Replace cannot see. Selects the matches in the drawing. |
 | **Find and Replace** | Replaces text in device and socket names and tags, and circuit labels, numbers and cable names. Shows every proposed change in a table to tick before anything is written. |
+| **Reconcile Panel Connectors** | Finds sockets renamed since the last run — including renames typed straight into the OIP — and brings the panel connectors pointing at them up to date. |
 | **Draw schematic job** | Opens a file dialog, then builds the devices and wiring from the job file Claude gave you. Falls back to ConnectCAD's device database for a device's real connectors. |
 | **Preferences** | Column spacing, row spacing, gap between sections, circuit line mode, device label symbol. |
 | **Export prompt for Claude** | Read-only. Writes a profile of how this drawing is built, to hand Claude so new work matches it. |
@@ -77,6 +78,32 @@ rename its equipment item and every panel reference too, or they come apart.
 That is on by default and can be turned off, which is occasionally what you
 want and usually not. Those follow-on edits aren't listed in the table because
 they aren't choices — they're what keeps the rename from breaking the drawing.
+
+### Reconcile Panel Connectors
+
+ConnectCAD does not push a schematic socket rename out to the panel connectors
+that point at it. Rename a socket in the Object Info palette and the panel goes
+on showing the old name, with no warning. Rename it with **Find and Replace**
+and CC Tools carries the references along — but a rename typed straight into
+the OIP happens where no tool can see it.
+
+**This cannot be a background service.** There is no timer, no idle handler, no
+document-level event hook and no modeless dialog in the VectorScript API;
+observing another vendor's plug-in object needs the C++ SDK, which is how
+ConnectCAD itself is built. A menu command runs once and exits.
+
+So it works by snapshot and diff. Every plug-in object carries a persistent
+uuid, so CC Tools records each socket's uuid and name, and on the next run a
+uuid whose name has changed is a rename — reliably, without guessing from the
+names themselves. The panel connectors pointing at the old name are then
+brought up to date, shown in the same review table as Find and Replace.
+
+The snapshot is refreshed at the end of **every** CC Tools run, so the window
+it covers is "since you last used these tools" without anyone maintaining it.
+The first run on a drawing has nothing to compare against and says so.
+
+Worth binding to a keyboard shortcut if you rename in the OIP often: it is one
+command and does nothing when there is nothing to do.
 
 ### Spell Check, and why it isn't just a dictionary
 
