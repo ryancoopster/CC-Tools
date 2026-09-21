@@ -30,6 +30,7 @@
 
 import vs
 import os
+import sys
 import csv
 import time
 
@@ -7920,6 +7921,91 @@ def tool_draw_job():
     return 'done', '{}\n{}'.format(summary, path)
 
 
+
+def clipboard_commands(text, platform, osname):
+    """The clipboard commands to try, in order, as (argv, payload) pairs.
+
+    Split out from copy_to_clipboard so the platform choice can be tested
+    without a Windows machine or a live clipboard.
+    """
+    if platform.startswith('darwin'):
+        return [(['pbcopy'], text.encode('utf-8'))]
+    if osname == 'nt':
+        # clip.exe reads the console code page and mangles anything outside
+        # it, and the spec is full of em-dashes and arrows, so PowerShell
+        # goes first. clip stays as a fallback, fed UTF-16LE, which is the
+        # one encoding it reads correctly.
+        return [
+            (['powershell', '-NoProfile', '-Command',
+              '$in = [Console]::In.ReadToEnd(); Set-Clipboard -Value $in'],
+             text.encode('utf-8')),
+            (['clip'], text.encode('utf-16-le')),
+        ]
+    return [(['xclip', '-selection', 'clipboard'], text.encode('utf-8')),
+            (['xsel', '--clipboard', '--input'], text.encode('utf-8'))]
+
+
+def copy_to_clipboard(text):
+    """Put text on the system clipboard. Returns (ok, detail).
+
+    VectorScript has no clipboard routine -- the application binary exposes
+    none under any spelling -- so this hands the text to the platform's own
+    tool. The embedded Python ships _posixsubprocess, so subprocess works.
+
+    Windows is best-effort and untested here: this runs on macOS. PowerShell is
+    tried before clip.exe because clip reads the console code page and mangles
+    anything outside it, and JOB-SPEC.md contains em-dashes and arrows.
+    """
+    try:
+        import subprocess
+    except Exception as err:
+        return False, 'subprocess is unavailable ({})'.format(err)
+
+    commands = clipboard_commands(text, sys.platform, os.name)
+    detail = 'no clipboard command available'
+    for argv, payload in commands:
+        try:
+            proc = subprocess.Popen(argv, stdin=subprocess.PIPE,
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE)
+            _, err = proc.communicate(payload)
+            if proc.returncode == 0:
+                return True, argv[0]
+            detail = ((err or b'').decode('utf-8', 'replace').strip()
+                      or '{} exited {}'.format(argv[0], proc.returncode))
+        except Exception as err:
+            detail = str(err)
+    return False, detail
+
+
+def copy_job_spec():
+    """Put the spec Claude needs on the clipboard. Returns a status line.
+
+    Reads whichever accepted filename the user saved it under, the same way
+    the device-list reader does, so the button and the reader can never
+    disagree about which file is the spec.
+    """
+    path = golden_path()
+    if not os.path.exists(path):
+        return ('{} is not in {} yet -- copy it there from the repo first.'
+                .format(GOLDEN_FILE, BASE_FOLDER))
+    try:
+        with open(path, 'r', encoding='utf-8') as handle:
+            spec = handle.read()
+    except Exception as err:
+        return 'Could not read {}: {}'.format(os.path.basename(path), err)
+    if not spec.strip():
+        return '{} is empty.'.format(os.path.basename(path))
+
+    ok, detail = copy_to_clipboard(spec)
+    if ok:
+        return ('Copied {} ({:,} characters). Paste it into a new Claude chat, '
+                'then describe the schematic.'.format(
+                    os.path.basename(path), len(spec)))
+    return 'Could not reach the clipboard ({}). The file is at {}'.format(
+        detail, path)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # LAUNCHER
 # ═══════════════════════════════════════════════════════════════════════════
@@ -7931,6 +8017,7 @@ lPromptChk, lJobChk = 313, 314
 lPrefsChk, lSetupLbl = 315, 316
 lSearchChk, lReplaceChk, lReconChk = 317, 318, 319
 lOrderTxt, lHintTxt = 308, 309
+lSpecBtn, lSpecTxt = 320, 321
 
 
 def ask_which_tools():
@@ -7969,6 +8056,14 @@ def ask_which_tools():
     vs.CreateStaticText(
         dlg, lHintTxt, 'Reports are written to ~/Documents/CC Tools/', -1)
 
+    # Starting a schematic begins outside Vectorworks, in a Claude chat, and
+    # the spec is a 30k-character file nobody wants to go and find.
+    vs.CreatePushButton(dlg, lSpecBtn, 'Copy JOB-SPEC.md for Claude')
+    vs.CreateStaticText(
+        dlg, lSpecTxt,
+        'Puts the spec on the clipboard to paste into a new chat.'.ljust(78),
+        -1)
+
     vs.SetFirstLayoutItem(dlg, lToolLbl)
     vs.SetBelowItem(dlg, lToolLbl, lNormChk, 0, 0)
     vs.SetBelowItem(dlg, lNormChk, lMatchChk, 0, 0)
@@ -7985,6 +8080,8 @@ def ask_which_tools():
     vs.SetBelowItem(dlg, lRefChk, lProbeChk, 0, 0)
     vs.SetBelowItem(dlg, lProbeChk, lOrderTxt, 0, 10)
     vs.SetBelowItem(dlg, lOrderTxt, lHintTxt, 0, 8)
+    vs.SetBelowItem(dlg, lHintTxt, lSpecBtn, 0, 12)
+    vs.SetBelowItem(dlg, lSpecBtn, lSpecTxt, 0, 4)
 
     def handler(item, data):
         if item == kSetup:
@@ -8003,6 +8100,11 @@ def ask_which_tools():
             vs.SetBooleanItem(dlg, lSearchChk, False)
             vs.SetBooleanItem(dlg, lReplaceChk, False)
             vs.SetBooleanItem(dlg, lReconChk, False)
+        elif item == lSpecBtn:
+            # A push button reports and leaves the dialog open, so the result
+            # goes to the line under it rather than to an alert the user would
+            # have to dismiss before carrying on.
+            vs.SetItemText(dlg, lSpecTxt, copy_job_spec())
         elif item == kOK:
             picked = []
             # Fixed order, independent of which boxes the user ticked first.

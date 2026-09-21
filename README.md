@@ -189,7 +189,9 @@ Spell Check keeps an ignore list at `~/Documents/CC Tools/spelling_ignore.txt`. 
 CC Tools can draw a schematic that Claude designs — no API key, developer
 account or terminal needed:
 
-1. Drag [`JOB-SPEC.md`](JOB-SPEC.md) into a Claude conversation — one file, spec and device list.
+1. Get the spec into a Claude conversation — one file, spec and device list.
+   Either drag [`JOB-SPEC.md`](JOB-SPEC.md) in, or click **Copy JOB-SPEC.md for Claude**
+   at the bottom of the CC Tools launcher and paste.
 2. Describe what you want.
 3. Download the `.json` file Claude gives you.
 4. **CC Tools ▸ Draw schematic job**, and pick that file.

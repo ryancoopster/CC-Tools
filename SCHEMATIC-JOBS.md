@@ -11,6 +11,13 @@ back a file.
    format and the rules, and carries the device list — the real connectors of
    the devices you use, so it does not invent any. Do this once per
    conversation.
+
+   If the file isn't to hand, open **CC Tools** and click **Copy JOB-SPEC.md
+   for Claude** at the bottom of the launcher: it puts the whole spec on the
+   clipboard, ready to paste. It copies the same file the plug-in reads the
+   device list from, in `~/Documents/CC Tools/`, so the two can never disagree
+   about which spec is in force. The launcher stays open, and the line under
+   the button says what happened.
 2. **Describe what you want.** Plain English. *"A Luminex 10i-IP feeding four
    Meyer TIGRA-L arrays over Milan primary, one array per output."* Go back and
    forth until the design is right — this is the part worth spending time on.
