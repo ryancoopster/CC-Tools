@@ -312,12 +312,30 @@ count and a SHA-256, checked along with `compile()` before anything is written,
 and the write is a temp file plus `os.replace` so the live file is never
 half-written.
 
-**An installed update ends the run**, on both paths — but the launcher cannot
-close itself. All 2,269 core routines were checked: the only `Close*` ones are
-for text files, worksheets, PDFs and QuickTime movies, and there is nothing
-that dismisses a modal layout dialog. So it clears and disables every tick-box
-via `EnableItem`, disables the update button, and alerts immediately, so the
-window that stays on screen matches what will actually happen. The automatic check runs
+**An installed update hands over to itself.** The old code cannot be reloaded
+in place, but it can `exec()` the new payload in a **fresh namespace dict** —
+which is a fresh module namespace, so the new version gets its own globals and
+inherits none of this module's. The file ends in a `run_cc_tools()` call, so
+exec'ing it opens the new launcher immediately.
+
+An earlier version of this design rejected that, on the grounds that the new
+code would inherit the old one's globals. It does not, and a test asserts it:
+the handed-over run cannot see `UPDATE_REPO`. What it does share is the
+interpreter and whatever objects the old module still holds, none of which it
+refers to. It is safe here specifically because **nothing has touched the
+drawing yet** — the check runs before the launcher, and the launcher's button
+runs before any tool — and because the file was checksummed and compiled
+before it was written.
+
+`CC_TOOLS_JUST_UPDATED` goes into that namespace so the new run does not check
+again and hand over a second time.
+
+The launcher's own button is the one case that still costs a click: all 2,269
+core routines were checked and nothing dismisses a modal layout dialog — the
+only `Close*` routines are for text files, worksheets, PDFs and QuickTime
+movies — so the hand-over has to wait until the user closes it. Until then
+every tick-box is cleared and disabled via `EnableItem`, so what is on screen
+matches what will happen. The automatic check runs
 before the launcher and returns; the manual button sets a flag so that
 whichever button closes the dialog, no tool is selected and the run stops with
 "CC Tools has been updated and has closed." Without that flag a user could

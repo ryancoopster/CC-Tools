@@ -40,7 +40,7 @@ BASE_FOLDER = os.path.expanduser('~/Documents/CC Tools')
 # The running version. The update check compares this against the version
 # published in update.json at the top of the repository, so the two must be
 # bumped together -- tools/release.py does both and refuses to do one.
-CC_TOOLS_VERSION = '0.9.7'
+CC_TOOLS_VERSION = '0.9.8'
 
 TYPE_GROUP = 11
 TYPE_PIO   = 86
@@ -8730,10 +8730,53 @@ def offer_update(manifest, state):
     kept = '\nThe previous version is kept at {}'.format(detail) if detail else ''
     if spec_note and spec_note != 'device list updated':
         kept += '\n\n' + spec_note
-    return True, ('Updated to {}. This run has stopped, because it is still '
-                  'holding the old version.\n\nPick CC Tools from the menu '
-                  'again to start the new one.{}'
+    return True, ('Updated to {}. Starting it now.{}'
                   .format(manifest['version'], kept)), state
+
+
+def relaunch_after_update():
+    """Start the version just installed, in this same run. Returns (ok, error).
+
+    The old code cannot be reloaded in place, but it can hand over. The new
+    payload is exec'd in a FRESH namespace, so it gets its own module globals
+    and nothing of this module's state reaches it -- and the file ends in a
+    run_cc_tools() call, so exec'ing it opens the new launcher immediately.
+    The user never goes back to the menu.
+
+    An earlier version of this file argued against handing over, on the
+    grounds that the new code would inherit the old one's globals. That was
+    wrong: a fresh dict IS a fresh module namespace. What it does share is the
+    interpreter and whatever objects this module still holds, none of which
+    the new code refers to.
+
+    It is safe here specifically because nothing has touched the drawing yet:
+    the update check runs before the launcher, and the launcher's own button
+    runs before any tool. The file has already been checksummed and compiled
+    before it was written, so this is not the first time it has been read.
+    """
+    path = payload_path()
+    if not path or not os.path.isfile(path):
+        return False, 'there is no program file to start'
+    try:
+        with open(path, 'r', encoding='utf-8') as handle:
+            source = handle.read()
+        code = compile(source, path, 'exec')
+    except Exception as err:
+        return False, '{}: {}'.format(type(err).__name__, err)
+
+    try:
+        exec(code, {
+            '__name__': '__main__',
+            '__file__': path,
+            'CC_TOOLS_PAYLOAD': path,
+            'CC_TOOLS_STUB_VERSION': globals().get('CC_TOOLS_STUB_VERSION'),
+            # Stops the new run checking for updates again. Without it a
+            # manifest that moved mid-run could hand over a second time.
+            'CC_TOOLS_JUST_UPDATED': True,
+        })
+    except Exception as err:
+        return False, '{}: {}'.format(type(err).__name__, err)
+    return True, ''
 
 
 def run_update_check(force=False):
@@ -8748,6 +8791,9 @@ def run_update_check(force=False):
     did not request.
     """
     import time as _time
+    # The run that was just handed to by an update must not check again.
+    if globals().get('CC_TOOLS_JUST_UPDATED') and not force:
+        return False, ''
     prefs = load_prefs()
     state = load_update_state()
 
@@ -8911,18 +8957,18 @@ def ask_which_tools():
                 # Vectorworks has no routine to close a layout dialog from
                 # code -- all 2,269 core routines were checked, and the only
                 # Close* ones are for text files, worksheets, PDFs and movies.
-                # So the launcher cannot shut itself. It is switched off
-                # instead: every tick-box cleared and disabled, so what is on
-                # screen matches what will happen, and the user is told at
-                # once rather than after they close it.
+                # So this dialog cannot dismiss itself, and the hand-over to
+                # the new version has to wait until the user closes it. Until
+                # then it is switched off -- every tick-box cleared and
+                # disabled -- so what is on screen matches what will happen.
                 chosen['updated'] = True
                 for box in TOOL_CHECKBOXES:
                     vs.SetBooleanItem(dlg, box, False)
                     vs.EnableItem(dlg, box, False)
                 vs.EnableItem(dlg, lUpdBtn, False)
                 vs.AlrtDialog(
-                    '{}\n\nClose this window, then pick CC Tools from the '
-                    'menu again to start it.'.format(status))
+                    '{}\n\nClose this window and the new version opens by '
+                    'itself.'.format(status))
         elif item == lSpecBtn:
             # A push button reports and leaves the dialog open, so the result
             # goes to the line under it rather than to an alert the user would
@@ -8965,8 +9011,9 @@ def ask_which_tools():
 
     answer = vs.RunLayoutDialog(dlg, handler)
     if chosen.get('updated'):
-        # Already explained when it happened; saying it twice would be nagging.
-        return None
+        # A modal dialog cannot be dismissed from its own handler, so the
+        # hand-over waits until it closes -- which is now.
+        return 'updated'
     if answer != kOK:
         return None
     return chosen.get('tools')
@@ -8988,6 +9035,17 @@ TOOL_RUNNERS = [
 ]
 
 
+def hand_over():
+    """Start the newly installed version, or say why it could not."""
+    ok, error = relaunch_after_update()
+    if not ok:
+        vs.AlrtDialog(
+            'CC Tools was updated, but the new version could not be started '
+            'in this session:\n\n{}\n\nPick CC Tools from the menu again. '
+            'If it still will not start, delete\n{}\nand run it once more '
+            'to download a fresh copy.'.format(error, payload_path()))
+
+
 def run_cc_tools():
     """Run every selected tool in sequence, then report once.
 
@@ -9005,9 +9063,13 @@ def run_cc_tools():
     installed, status = run_update_check()
     if installed:
         vs.AlrtDialog(status)
+        hand_over()
         return
 
     tools = ask_which_tools()
+    if tools == 'updated':
+        hand_over()
+        return
     if tools is None:
         return
     if not tools:

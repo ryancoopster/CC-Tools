@@ -252,8 +252,8 @@ stub_fetch(payload=GOOD, manifest=good_manifest)
 vs.answers = [m.UPDATE_ANSWER_NOW]
 installed, status = m.run_update_check()
 check('T7 "Update now" installs', installed is True and installs, status)
-check('T7 and says it takes effect next run',
-      'menu again' in status, status)
+check('T7 and says the new version is starting',
+      'Starting it now' in status, status)
 
 installs[:] = []
 clean()
@@ -563,14 +563,11 @@ def click_update_then_continue(dlg, handler):
 vs.RunLayoutDialog = click_update_then_continue
 picked = m.ask_which_tools()
 check('T14 ticking tools after an update runs none of them',
-      picked is None, picked)
+      picked == 'updated', picked)
 check('T14 and the user is told to close the window',
       any('Close this window' in a for a in alerts), alerts)
-check('T14 and told to pick it again',
-      any('menu again' in a for a in alerts), alerts)
-check('T14 the message is honest that the run stopped, not that it closed',
-      any('stopped' in a for a in alerts)
-      and not any('has closed' in a for a in alerts), alerts)
+check('T14 and that the new version opens by itself',
+      any('opens by itself' in a for a in alerts), alerts)
 check('T14 the status line reported the update too',
       'Updated' in texts.get(m.lSpecTxt, ''), texts.get(m.lSpecTxt))
 
@@ -642,7 +639,70 @@ check('T15 the user is told at once, not after closing the window',
       any('Close this window' in a for a in alerts), alerts)
 check('T15 and the message does not claim the window closed itself',
       not any('has closed' in a for a in alerts), alerts)
+check('T15 the launcher reports the update rather than swallowing it',
+      any('Updated to' in a for a in alerts), alerts)
 check('T15 it is said once, not twice', len(alerts) == 1, alerts)
+
+
+# ── T16: the new version takes over without going back to the menu ────────
+clean()
+app = os.path.join(m.BASE_FOLDER, 'app')
+os.makedirs(app, exist_ok=True)
+live = os.path.join(app, 'cc_tools.py')
+
+# A stand-in payload that records the namespace it was given.
+with open(live, 'w', encoding='utf-8') as f:
+    f.write('import os\n'
+            'HANDOVER = {\n'
+            "    'name': __name__,\n"
+            "    'payload': CC_TOOLS_PAYLOAD,\n"
+            "    'just_updated': globals().get('CC_TOOLS_JUST_UPDATED'),\n"
+            "    'sees_old_globals': 'UPDATE_REPO' in globals(),\n"
+            '}\n'
+            "open(os.path.join(os.path.dirname(__file__), 'ran.txt'), 'w')"
+            ".write(repr(HANDOVER))\n")
+
+m.__dict__['CC_TOOLS_PAYLOAD'] = live
+ok, error = m.relaunch_after_update()
+check('T16 the new version runs in this same session', ok is True, error)
+
+marker = os.path.join(app, 'ran.txt')
+check('T16 it actually executed', os.path.exists(marker))
+handed = eval(open(marker, encoding='utf-8').read()) if os.path.exists(marker) else {}
+check('T16 it runs as __main__, so its trailing run_cc_tools() fires',
+      handed.get('name') == '__main__', handed)
+check('T16 it is told where it lives', handed.get('payload') == live, handed)
+check('T16 it is told not to check for updates again',
+      handed.get('just_updated') is True, handed)
+check('T16 and it does NOT inherit the old version globals',
+      handed.get('sees_old_globals') is False, handed)
+
+# That flag must actually suppress the next check.
+m.__dict__['CC_TOOLS_JUST_UPDATED'] = True
+asked = stub_fetch(payload=GOOD, manifest=good_manifest)
+installed, status = m.run_update_check()
+check('T16 a handed-over run makes no update call', asked == [], asked)
+check('T16 but an explicit Check for updates still works',
+      m.run_update_check(force=True) is not None)
+del m.__dict__['CC_TOOLS_JUST_UPDATED']
+
+# A payload that will not run must be reported, not swallowed.
+with open(live, 'w', encoding='utf-8') as f:
+    f.write('raise RuntimeError("the new version is broken")\n')
+ok, error = m.relaunch_after_update()
+check('T16 a broken new version reports instead of vanishing',
+      ok is False and 'broken' in error, error)
+
+m.__dict__['CC_TOOLS_PAYLOAD'] = os.path.join(app, 'gone.py')
+ok, error = m.relaunch_after_update()
+check('T16 a missing payload is reported too',
+      ok is False and 'no program file' in error, error)
+
+for f in (live, marker):
+    if os.path.exists(f):
+        os.remove(f)
+os.rmdir(app)
+m.__dict__['CC_TOOLS_PAYLOAD'] = ''
 
 clean()
 R.report_and_exit()
