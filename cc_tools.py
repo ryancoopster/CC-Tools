@@ -421,12 +421,45 @@ def socket_rename_map(edits, parents):
         device = owning_device(e['handle'], parents)
         if device is None:
             continue
-        for candidates in (DEVICE_NAME_FIELDS, DEVICE_TAG_FIELDS):
-            field = resolve_field(device, candidates)
-            identifier = read_field(device, field) if field else ''
-            if not is_unnamed(identifier):
-                out[(identifier, e['old'])] = e['new']
+        name_field = resolve_field(device, DEVICE_NAME_FIELDS)
+        name = read_field(device, name_field) if name_field else ''
+        if not is_unnamed(name):
+            out[(name, e['old'])] = e['new']
+
+        # The tag is accepted as an identifier too, because a PanelConnector's
+        # ConnectedDev can hold either. But ONLY when no other device is
+        # actually NAMED that tag -- otherwise a connector pointing at that
+        # other device matches this entry and is rewritten to a socket name
+        # belonging to something else entirely.
+        tag_field = resolve_field(device, DEVICE_TAG_FIELDS)
+        tag = read_field(device, tag_field) if tag_field else ''
+        if is_unnamed(tag) or tag == name:
+            continue
+        if tag not in device_names_in_document():
+            out[(tag, e['old'])] = e['new']
     return out
+
+
+_device_name_cache = {'names': None}
+
+
+def device_names_in_document(refresh=False):
+    """Every device name in the document, as a set.
+
+    Cached for the life of one planning pass: socket_rename_map asks once per
+    renamed socket, and walking the document each time would make a 200-socket
+    rename quadratic."""
+    if refresh or _device_name_cache['names'] is None:
+        names = set()
+        for handle in walk_document():
+            if classify(handle) != 'device':
+                continue
+            field = resolve_field(handle, DEVICE_NAME_FIELDS)
+            value = read_field(handle, field) if field else ''
+            if not is_unnamed(value):
+                names.add(value)
+        _device_name_cache['names'] = names
+    return _device_name_cache['names']
 
 
 def unsynced_socket_references(edits, sync_edits):
@@ -459,26 +492,47 @@ def unsynced_socket_references(edits, sync_edits):
     return stranded
 
 
-def unambiguous_socket_map(edits):
-    """old socket name -> new, but ONLY where every rename agrees.
+def unambiguous_socket_map(edits, document=None):
+    """old socket name -> new, where a bare name identifies it beyond doubt.
 
-    Socket names repeat across devices -- 'LAN_IN 1' is on nearly every
-    speaker -- so a bare name is not normally enough to identify one. It IS
-    enough when every socket carrying that name in this run is being renamed to
-    the same thing: whichever one a reference meant, the answer is the same.
+    Socket names repeat across devices -- 'LAN_IN 1' is on nearly every speaker
+    -- so a bare name normally identifies nothing. It identifies something only
+    when BOTH hold:
 
-    That is what makes a PanelConnector's SocketName safe to follow even when
-    nothing on it says which device it belongs to. A name renamed two different
-    ways is dropped from the map rather than guessed at."""
+      * every rename of that name in this run agrees on the new name, and
+      * no socket ANYWHERE in the document keeps that name afterwards.
+
+    The second test is the one that matters and it was missing. Without it,
+    renaming 'LAN_IN 1' on one speaker rewrote the panel connectors of every
+    other speaker that happened to have a socket of the same name, because
+    their references looked identical. The first test alone cannot see the
+    sockets that are not being renamed at all."""
     proposed = {}
+    renamed_handles = set()
     for e in edits:
         if e['kind'] != 'socket' or not e['is_link_name']:
             continue
         if is_unnamed(e['old']) or is_unnamed(e['new']):
             continue
         proposed.setdefault(e['old'], set()).add(e['new'])
+        renamed_handles.add(e['handle'])
+    if not proposed:
+        return {}
+
+    # Any socket keeping one of these names disqualifies it: a reference to
+    # that name is still satisfiable by the socket that did not move.
+    survivors = set()
+    for handle in (document if document is not None else walk_document()):
+        if classify(handle) != 'socket' or handle in renamed_handles:
+            continue
+        field = resolve_field(handle, SOCKET_NAME_FIELDS)
+        value = read_field(handle, field) if field else ''
+        if value in proposed:
+            survivors.add(value)
+
     return dict((old, list(news)[0]) for old, news in proposed.items()
-                if len(news) == 1 and list(news)[0] != old)
+                if len(news) == 1 and list(news)[0] != old
+                and old not in survivors)
 
 
 def owning_panel_device(handle, parents):
@@ -506,17 +560,18 @@ def plan_link_sync(edits, parents):
     that link is a persisted reference, not a name match -- two devices sharing
     a name would otherwise both claim the same equipment item, and only one of
     them is really linked to it."""
+    device_names_in_document(refresh=True)
+    document = walk_document()
     device_map = link_name_map(edits, 'device')
     equip_map = link_name_map(edits, 'equipment')
     socket_map = socket_rename_map(edits, parents)
-    plain_socket_map = unambiguous_socket_map(edits)
+    plain_socket_map = unambiguous_socket_map(edits, document)
 
     if not device_map and not equip_map and not socket_map \
             and not plain_socket_map:
         return [], True
 
     sync_edits = []
-    document = walk_document()
     dev_to_equip, equip_to_dev, have_assoc = build_association_map(document)
     # Fields the caller is already rewriting, kept as a lookup so a conflicting
     # plan can amend the existing edit instead of silently losing to it.
@@ -663,7 +718,11 @@ def plan_link_sync(edits, parents):
             own_field = resolve_field(h, PCONN_OWN_SOCKET_FIELDS)
             own_old = read_field(h, own_field) if own_field else ''
             if own_field and not is_unnamed(own_old):
-                panel_device = dev_old or owning_panel_device(h, parents)
+                # The panel's OWN device, tried first. SocketName names a
+                # socket on the device whose panel this is; ConnectedDev names
+                # the REMOTE end of the wire. Asking the remote device which of
+                # its sockets this is answers the wrong question.
+                panel_device = owning_panel_device(h, parents) or dev_old
                 new_name = None
                 if not is_unnamed(panel_device) \
                         and (panel_device, own_old) in socket_map:
@@ -789,22 +848,26 @@ def find_socket_collisions(edits, parents):
 
 
 # ─── Apply ───────────────────────────────────────────────────────────────────
-def rename_device(handle, field, value):
-    """Rename a Device through ConnectCAD's own path. True if it landed.
+def rename_linked_object(handle, field, value):
+    """Rename a Device or EquipItem through ConnectCAD. True if it landed.
 
     CC_OnFindAndReplace is the same code that runs when you type in the OIP
-    Name field. The difference that matters is not the string: renaming a
-    device SEVERS its stale equipment association and re-forms the correct one
-    by name. A plain SetRField writes the text and leaves the stored
-    association pointing at whatever rack item it used to match -- so a device
-    renamed by script kept a link the interface would have broken, and never
-    picked up the one it should have gained.
+    Name field, and the string is the least of what it does. The two sides
+    behave DIFFERENTLY, which is the whole reason order matters below:
 
-    Only 'name' gets that path; every other field is a plain write, which is
-    why this is used for link-name edits alone.
+      Device     -> UpdateDeviceLocation. SEVERS a stale equipment
+                    association and clears the device's location data. It
+                    contains no association call at all -- it only breaks.
+      EquipItem  -> OnEquipNameChange -> FindAndUpdateDevices. This is the
+                    only routine that FORMS the link: it looks up devices by
+                    the equipment's NEW name, associates one, and copies room,
+                    rack and rack-U onto it.
 
-    It is a silent no-op without a ConnectCAD licence, so the value is read
-    back rather than assumed. Callers fall back to write_field."""
+    A plain SetRField does neither, so a renamed pair kept a link the
+    interface would have broken and never gained the one it should have.
+
+    Silent no-op without a ConnectCAD licence, so the value is read back
+    rather than assumed. Callers fall back to write_field."""
     routine = cc_routine('CC_OnFindAndReplace')
     if routine is None or not value:
         return False
@@ -816,16 +879,19 @@ def rename_device(handle, field, value):
 
 
 def edit_order(edit):
-    """Sort key putting equipment renames before the devices that match them.
+    """Sort key putting device renames before the equipment that matches them.
 
-    CC_OnFindAndReplace re-forms a device's equipment association BY NAME at
-    the moment of the rename. If the equipment item still holds the old name at
-    that point there is nothing to match, and the pair comes apart even though
-    both were being renamed to the same thing. Renaming the equipment first
-    means the device finds its partner already waiting."""
-    if edit['is_link_name'] and edit['kind'] == 'equipment':
-        return 0
+    The link is formed from the EQUIPMENT side: renaming an equipment item
+    looks up devices by its new name and associates one. So the device has to
+    be carrying that name already, which means devices go first.
+
+    An earlier version of this had it the other way round, on the assumption
+    that the device rename re-formed the association. It does not -- it only
+    severs. With equipment first, the pair was disassociated and never put back
+    together."""
     if edit['is_link_name'] and edit['kind'] == 'device':
+        return 0
+    if edit['is_link_name'] and edit['kind'] == 'equipment':
         return 1
     return 2
 
@@ -833,19 +899,25 @@ def edit_order(edit):
 def apply_edits(edits):
     """Write every planned edit, then reset every touched object.
 
-    All writes happen before any reset, so ConnectCAD never sees a device
-    renamed while its partner still holds the old name. Sockets reset last:
-    they live inside their parent Device, and resetting a parent after editing
-    its children could discard the child edits."""
+    Writes come before the resets this function performs, so ConnectCAD never
+    sees a device renamed while its partner still holds the old name. Sockets
+    reset last: they live inside their parent Device, and resetting a parent
+    after editing its children could discard the child edits.
+
+    One exception, worth knowing: ConnectCAD's own rename resets the object
+    itself as part of re-forming the link. That is fine for a Device or an
+    EquipItem, neither of which has child edits in this pipeline, but it means
+    the ordering guarantee is about the resets BELOW, not about every reset in
+    the run."""
     applied = []
     touched = []
     fell_back = 0
     for e in sorted(edits, key=edit_order):
         landed = False
-        if e['kind'] == 'device' and e['is_link_name']:
-            # ConnectCAD's own rename, so the equipment association is severed
-            # and re-formed rather than left stale.
-            landed = rename_device(e['handle'], e['field'], e['new'])
+        if e['kind'] in ('device', 'equipment') and e['is_link_name']:
+            # ConnectCAD's own rename on BOTH sides: the device side severs a
+            # stale association, the equipment side forms the new one.
+            landed = rename_linked_object(e['handle'], e['field'], e['new'])
             if not landed:
                 fell_back += 1
         if not landed:
@@ -871,6 +943,25 @@ def apply_edits(edits):
 # Read by the tools so a licence-less session says so rather than quietly
 # leaving every association stale.
 apply_edits.fallback_renames = 0
+
+
+def fallback_rename_note():
+    """A line for any tool's report when ConnectCAD's rename path was missing.
+
+    Returns '' when it was not. Every tool that renames devices needs this --
+    the names change either way, but the rack links only follow when the
+    routine is available, and a run that silently left them all stale is the
+    exact defect this codebase keeps rediscovering."""
+    count = apply_edits.fallback_renames
+    if not count:
+        return ''
+    return ('WARNING: {} device/equipment rename(s) could not use ConnectCAD\'s '
+            'own rename path.\n'
+            'The names were written, but rack equipment links were NOT '
+            're-formed -- each object\n'
+            'kept whatever association it had. That path is a no-op without a '
+            'ConnectCAD\nlicence. Re-link by hand, or re-run with one.'
+            .format(count))
 
 
 def reset_circuits():
@@ -3080,7 +3171,16 @@ def tool_spellcheck():
     ignore = load_ignore_list()
     wordlist = load_wordlist()
     suspects = find_suspects(frequency, cased, objects, ignore, wordlist)
-    if not suspects:
+
+    # Only the suspect-DRIVEN actions need suspects. Reviewing every term,
+    # exporting the vocabulary and applying a hand-edited vocabulary.csv all
+    # work from the full word list or from the file, and an empty suspect list
+    # is the NORMAL state for a consistently-spelled drawing -- which is
+    # exactly the state someone doing bulk vocabulary work is in. Returning
+    # here made those three silently do nothing and report success.
+    if not suspects and settings['action'] in (ACTION_SPELL_REVIEW,
+                                               ACTION_SPELL_EXPORT,
+                                               ACTION_SPELL_ALL):
         return 'done', 'no suspected misspellings in {} distinct word(s)'.format(
             len(frequency))
 
@@ -3916,8 +4016,15 @@ def probe_make_device(name, x, y, width, height, socket_specs, log,
         write_field(socket, 'tag', socket_name)
         write_field(socket, 'type', socket_type)
         # Without these the socket renders '???' for its signal and connector.
-        write_field(socket, 'signal', spec_signal or 'LAN')
-        write_field(socket, 'connector', spec_connector or 'EC-6A')
+        # No invented defaults. A socket with no signal given used to be
+        # stamped LAN on an EC-6A Ethercon, so a power inlet or an unspecified
+        # patch point was drawn as an Ethernet port -- and the circuit landing
+        # on it inherited that. A blank says "not specified", which is true and
+        # visible; a wrong value is neither.
+        if spec_signal:
+            write_field(socket, 'signal', spec_signal)
+        if spec_connector:
+            write_field(socket, 'connector', spec_connector)
         try:
             vs.ResetObject(socket)
         except Exception:
@@ -4689,6 +4796,12 @@ def load_prefs():
                 continue
         elif not isinstance(value, str):
             continue
+        # An enum has to be one of its values. preferences.json sits in a
+        # folder this workflow tells people to edit by hand, and an earlier
+        # build of this plug-in offered two CircuitType values that do not
+        # exist -- so a stale file can still be carrying one.
+        if key == 'circuit_type' and value not in CIRCUIT_TYPES:
+            continue
         prefs[key] = value
     return prefs
 
@@ -5174,10 +5287,33 @@ def tool_find_replace():
     if not picked:
         return 'done', None
 
-    # From here on nothing else is asked. The user has seen every change and
-    # said yes to it.
     edits = [make_edit(c['handle'], c['kind'], c['field'], c['old'], c['new'],
                        c['is_link_name']) for c in picked]
+
+    # Socket names only have to be unique WITHIN their device, so a replace can
+    # quietly collapse two of them onto one name -- 'LAN_IN A' and 'LAN_IN B'
+    # both becoming 'LAN_IN A'. Every other writing tool checks this; this one
+    # did not. Asked rather than refused: the user may be deliberately merging.
+    _w, collision_parents = walk_document(with_parents=True)
+    collisions = find_socket_collisions(edits, collision_parents)
+    if collisions:
+        listing = '\n'.join(
+            '   {} would have two sockets called "{}"'.format(device, name)
+            for (device, name) in sorted(collisions)[:8])
+        if len(collisions) > 8:
+            listing += '\n   ... and {} more'.format(len(collisions) - 8)
+        if vs.AlertQuestion(
+                '{} device(s) would end up with two sockets of the same '
+                'name.'.format(len(collisions)),
+                '{}\n\nA socket name only has to be unique within its device, '
+                'so nothing will stop this -- but any reference to that name '
+                'can no longer say which socket it means.\n\nReplace '
+                'anyway?'.format(listing),
+                1, 'Replace anyway', 'Cancel', '', '') != 1:
+            return 'cancelled', None
+
+    # From here on nothing else is asked. The user has seen every change and
+    # said yes to it.
 
     # References to a renamed device follow it, if asked for. Planned AFTER
     # the choice, so unticking a rename drops its follow-on edits with it.
@@ -5211,16 +5347,10 @@ def tool_find_replace():
                      'renamed here')
         lines.append('             is now unlinked from its equipment item.')
     lines.append('Applied:     {}'.format(len(applied)))
-    if apply_edits.fallback_renames:
+    note = fallback_rename_note()
+    if note:
         lines.append('')
-        lines.append('WARNING: {} device rename(s) could not use ConnectCAD\'s '
-                     'own rename path.'.format(apply_edits.fallback_renames))
-        lines.append('The names were written, but each device KEPT the rack '
-                     'equipment link it')
-        lines.append('had before and did not pick up one matching its new '
-                     'name. That path is a')
-        lines.append('no-op without a ConnectCAD licence. Re-link by hand, or '
-                     're-run with one.')
+        lines.append(note)
     lines.append('Circuits reset: {}'.format(reset))
     lines.append('')
     if duplicates:
@@ -5253,11 +5383,27 @@ def tool_find_replace():
     lines.append('CHANGES')
     lines.extend(format_edits(applied))
 
-    save_text('find_replace', '\n'.join(lines))
-    # Nothing is returned for the launcher to report. The user saw every change
-    # in the table and approved it; a summary afterwards would be one more
-    # dialog to dismiss for news they already have. The full record is in the
-    # report either way.
+    path = save_text('find_replace', '\n'.join(lines))
+
+    # Silence is only right when the run did what the table promised. A write
+    # ConnectCAD refused, or a rename that could not use its own path, changes
+    # the outcome in a way the user cannot see anywhere else -- and the whole
+    # point of this audit was that looking identical whether it worked or not
+    # is the defect.
+    refused = len(picked) + len(sync_edits) - len(applied)
+    if refused or apply_edits.fallback_renames:
+        trouble = []
+        if refused:
+            trouble.append('{} of {} change(s) were refused'.format(
+                refused, len(picked) + len(sync_edits)))
+        if apply_edits.fallback_renames:
+            trouble.append('{} device rename(s) could not update their rack '
+                           'links'.format(apply_edits.fallback_renames))
+        vs.AlrtDialog('{}.\n\nSee:\n{}'.format('; '.join(trouble), path))
+        return 'done', None
+
+    # Nothing to say: every change the table showed was made. A summary here
+    # would be one more dialog to dismiss for news the user already has.
     return 'done', None
 
 
@@ -6120,6 +6266,21 @@ def load_device_db():
     return _device_db_cache
 
 
+# Socket.type accepts IN, OUT and IO. The shipped database also uses two
+# tokens that are not types at all: LOOP (84 rows) and IOloop (6), which
+# describe a port that loops through rather than its direction. Written
+# verbatim they produce a socket whose type ConnectCAD does not recognise, on
+# devices including the Yamaha CL5, DiGiCo S31, Shure AD4Q and every Adamson
+# box. Both loop forms are bidirectional, so both become IO.
+DB_SOCKET_TYPES = {'IN': 'IN', 'OUT': 'OUT', 'IO': 'IO',
+                   'LOOP': 'IO', 'IOLOOP': 'IO'}
+
+
+def db_socket_type(raw):
+    """One database type token as a Socket.type value."""
+    return DB_SOCKET_TYPES.get((raw or '').strip().upper(), 'IO')
+
+
 def db_socket_specs(entry):
     """One database device's sockets, expanded, as builder specs.
 
@@ -6132,7 +6293,7 @@ def db_socket_specs(entry):
         prefix = row[DB_NAME]
         connector = row[DB_CONN].strip()
         signal = row[DB_SIGNAL].strip()
-        socket_type = (row[DB_TYPE].strip() or 'IO').upper()
+        socket_type = db_socket_type(row[DB_TYPE])
         side = -1 if row[DB_SIDE].strip().upper().startswith('L') else 1
         symbol = 'skt_L' if side < 0 else 'skt_R'
         try:
@@ -6542,7 +6703,17 @@ def known_signals():
         for index, line in enumerate(raw.split('\n')):
             if index == 0 or not line.strip():
                 continue          # row 0 is the header
-            name = line.split('\t')[0].strip()
+            cells = line.split('\t')
+            # Ten rows in this file are CATEGORY headings, not signals:
+            # Audio, Video, Control, Power, Network, Optical, Radio, Lighting,
+            # IT/Data and Comms/Conference. Each is a two-column row whose
+            # second cell is '='; a real signal carries a prefix, a connector
+            # and a description. Counting them as signals let a job carrying
+            # 'Video' pass the undefined-signal check and be drawn with a
+            # signal ConnectCAD does not have.
+            if len(cells) < 3 or cells[1].strip() == '=':
+                continue
+            name = cells[0].strip()
             if name:
                 _signal_cache.add(name.upper())
     return _signal_cache

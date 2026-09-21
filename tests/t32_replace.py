@@ -336,18 +336,19 @@ check('T12 both renames applied', len(applied) == 2, repr(len(applied)))
 check('T12 the device went through CC_OnFindAndReplace',
       any(h is device and f == 'name' for h, f, _v in vsm.cc_renames),
       repr(vsm.cc_renames))
-check('T12 the equipment item did NOT',
-      not any(h is item for h, _f, _v in vsm.cc_renames),
-      'only name on a Device gets the smart path')
+check('T12 the equipment item went through it TOO',
+      any(h is item and f == 'name' for h, f, _v in vsm.cc_renames),
+      'the equipment side is the only one that FORMS the association')
 check('T12 the name actually changed',
       mod.read_field(device, 'name') == 'AMP 1')
 
-# Ordering: the equipment must be renamed BEFORE the device, or the re-form by
-# name finds nothing and the pair comes apart.
+# Ordering: the DEVICE goes first. Renaming a device only SEVERS its
+# association; renaming the equipment item is what looks devices up by name and
+# forms the new one -- so the device must already carry that name.
 order = [mod.edit_order(e) for e in eds]
-check('T12 equipment sorts before device', order == [1, 0], repr(order))
+check('T12 device sorts before equipment', order == [0, 1], repr(order))
 seq = sorted(eds, key=mod.edit_order)
-check('T12 so equipment is written first', seq[0]['kind'] == 'equipment',
+check('T12 so the device is written first', seq[0]['kind'] == 'device',
       repr([e['kind'] for e in seq]))
 
 # Without a licence the routine is a silent no-op; the write must still land
@@ -372,5 +373,79 @@ vsm3.cc_renames = []
 mod3.apply_edits([mod3.make_edit(d3, 'device', 'tag', 'AMP1', 'AMP 1', False)])
 check('T12 a tag edit is a plain write', vsm3.cc_renames == [], repr(vsm3.cc_renames))
 check('T12 the tag still changed', mod3.read_field(d3, 'tag') == 'AMP 1')
+
+# ── T13: the unscoped socket fallback must not reach other devices ───────
+# Regression: renaming one speaker's 'LAN_IN 1' rewrote the panel connectors of
+# every other speaker with a socket of that name, because the references looked
+# identical and nothing checked whether those sockets still existed.
+def two_speakers(rename_both):
+    objs = [
+        Obj('Device', {'name': 'SPK 1.01', 'tag': 'SPK 1.01'},
+            children=[sock('LAN_IN 1')]),
+        Obj('Device', {'name': 'SPK 1.02', 'tag': 'SPK 1.02'},
+            children=[sock('LAN_IN 1')]),
+        Obj('PanelConnector', {'SocketName': 'LAN_IN 1', 'DisplayTag': 'LAN_IN 1',
+                               'ConnectedDev': '', 'ConnectedSkt': ''}),
+    ]
+    mod, _vs = load(Doc([objs]))
+    hs = mod.walk_document()
+    socks = [h for h in hs if mod.classify(h) == 'socket']
+    chosen = socks if rename_both else socks[:1]
+    eds = [mod.make_edit(h, 'socket', 'name', 'LAN_IN 1', 'NET_IN 1', True)
+           for h in chosen]
+    _w, par = mod.walk_document(with_parents=True)
+    sync, _u = mod.plan_link_sync(eds, par)
+    return mod, eds, mod.dedupe_edits(eds, sync)
+
+
+mod, eds, sync = two_speakers(rename_both=False)
+check('T13 an unscoped connector is NOT rewritten while another socket keeps the name',
+      not any(e['field'] == 'SocketName' for e in sync),
+      'SPK 1.02 still has LAN_IN 1, so the reference may well mean that one')
+check('T13 and the map itself is empty',
+      mod.unambiguous_socket_map(eds, mod.walk_document()) == {},
+      repr(mod.unambiguous_socket_map(eds, mod.walk_document())))
+
+mod, eds, sync = two_speakers(rename_both=True)
+check('T13 renaming every socket of that name makes it unambiguous again',
+      any(e['field'] == 'SocketName' and e['new'] == 'NET_IN 1' for e in sync),
+      'no socket keeps the old name, so any reference to it must mean these')
+
+# A device TAG must not be accepted as an identifier when another device is
+# actually NAMED that tag.
+mod2, _vs = load(Doc([[
+    Obj('Device', {'name': 'SPK 1', 'tag': 'TP-A'}, children=[sock('LAN_IN 1')]),
+    Obj('Device', {'name': 'TP-A', 'tag': 'TP-A'}, children=[sock('LAN_IN 1')]),
+    Obj('PanelConnector', {'SocketName': '', 'DisplayTag': 'P',
+                           'ConnectedDev': 'TP-A', 'ConnectedSkt': 'LAN_IN 1'}),
+]]))
+hs2 = mod2.walk_document()
+target = [h for h in hs2 if mod2.classify(h) == 'socket'][0]     # inside SPK 1
+eds2 = [mod2.make_edit(target, 'socket', 'name', 'LAN_IN 1', 'NET_IN 1', True)]
+_w, par2 = mod2.walk_document(with_parents=True)
+sync2, _u = mod2.plan_link_sync(eds2, par2)
+check('T13 a tag that collides with another device name is not used as a key',
+      not any(e['field'] == 'ConnectedSkt' for e in sync2),
+      'ConnectedDev "TP-A" means the device NAMED TP-A, not the one tagged it')
+
+# SocketName is scoped by the panel's own device, not the remote end.
+mod3, _vs = load(Doc([[
+    Obj('Device', {'name': 'PANEL DEV', 'tag': 'PANEL DEV'},
+        children=[sock('LAN_IN 1')]),
+    Obj('Device', {'name': 'REMOTE DEV', 'tag': 'REMOTE DEV'},
+        children=[sock('LAN_IN 1')]),
+    Obj('PanelLayout', {'DeviceType': 'CustomPanel', 'DeviceName': 'PANEL DEV'},
+        children=[Obj('PanelConnector', {
+            'SocketName': 'LAN_IN 1', 'DisplayTag': 'LAN_IN 1',
+            'ConnectedDev': 'REMOTE DEV', 'ConnectedSkt': ''})]),
+]]))
+hs3 = mod3.walk_document()
+panel_socket = [h for h in hs3 if mod3.classify(h) == 'socket'][0]   # PANEL DEV
+eds3 = [mod3.make_edit(panel_socket, 'socket', 'name', 'LAN_IN 1', 'NET_IN 1', True)]
+_w, par3 = mod3.walk_document(with_parents=True)
+sync3, _u = mod3.plan_link_sync(eds3, par3)
+check('T13 SocketName follows the PANEL device, not the wired-to device',
+      any(e['field'] == 'SocketName' and e['new'] == 'NET_IN 1' for e in sync3),
+      repr([(e['field'], e['new']) for e in sync3]))
 
 R.report_and_exit()
