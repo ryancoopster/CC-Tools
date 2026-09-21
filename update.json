@@ -1,9 +1,9 @@
 {
-  "version": "0.9.8",
+  "version": "0.9.9",
   "bytes": 389060,
-  "sha256": "81a738008c1e4fcc6bda3b7872d8367a0fb91d478d765970fff40313d4b5ab2b",
+  "sha256": "2add49ec2ed972ff205127262ddf06b0fd4a06489f9297794956fddb6e1bc295",
   "min_stub": 1,
   "notes": [
-    "An update now starts itself -- the new version's launcher opens in the same session instead of asking you to reopen from the menu"
+    "Nothing new -- published so the 0.9.8 hand-over has a version to hand over to"
   ]
 }
