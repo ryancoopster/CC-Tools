@@ -74,11 +74,12 @@ because the rules below determine those.
 |---|---|---|
 | `name` | yes | **Unique.** ConnectCAD links objects by name string, so a duplicate is rejected. |
 | `tag` | no | Display Tag. Defaults to `name`. |
+| `description` | no | Free text drawn under the block — what the device is for, e.g. `HOUSE LEFT ARRAY PROCESSING`. Leave it out rather than restating the model. |
 | `make`, `model` | no | If they match a device symbol already in the drawing, that symbol is stamped out instead of a new block being drawn — better, because somebody already laid it out correctly. |
 | `sockets` | yes* | \*Unless a symbol matches, or the make/model is in ConnectCAD's device database. Order matters: sockets stack down their edge in the order listed. |
 | `column` | no | Horizontal position, 0 upwards. Signal flows left to right, so sources are column 0. |
 | `row` | no | Vertical position, 0 downwards. Coarse — for separating unrelated chains. |
-| `align_to` | no | Sets the vertical position precisely. See below. |
+| `align_to` | no | Cosmetic only — levels one socket with another. **Never needed for wiring.** See below. |
 | `section` | no | Which band of the drawing this block belongs in. See **Sections**. |
 | `id` | no | Unique handle for this block. Defaults to `name`; **required** when a device appears in more than one section. Circuits reference this. |
 | `x`, `y` | no | Explicit drawing units, overriding `column`/`row`. Rarely what you want. |
@@ -167,6 +168,7 @@ which must exist in the device list.
 |---|---|
 | `signal` | The circuit's own signal, e.g. `MILAN PRI`. **Not** the same as the sockets' signal: a real drawing joins two `LAN` sockets with a `MILAN PRI` circuit. Use only signals ConnectCAD knows — `LINE`, `PWR`, `LAN`, `AES`, `DANTE`, `OPT` are standard, and `MILAN PRI`, `MILAN SEC`, `MIDC` are defined in this user's own library. Inventing one makes ConnectCAD flag every circuit carrying it. |
 | `cable` | A short human-readable name for the run, drawn along the middle of the line. **Ask the user whether they want cable names before writing any**, and if they do, write one for **every** circuit — a drawing where some lines are labelled and others are not looks like an oversight. |
+| `label` | Optional second annotation on the circuit, separate from `cable`. Most jobs want `cable` alone; use this only if the user asks for a second line of text. |
 
 Do **not** set a wire number. ConnectCAD numbers wires itself, by signal type,
 and a second scheme fighting it makes a mess.
@@ -348,8 +350,8 @@ Check each of these, because each one produces a silently wrong drawing:
 - [ ] Every circuit references devices by **id**, not by name.
 - [ ] No circuit crosses a section boundary.
 - [ ] Every `socket` named in a circuit exists on that device, spelled the same.
-- [ ] Every circuit's destination has an `align_to` back to its source (or you
-      have told the user which ones you could not align).
+- [ ] Every circuit's source sits in a lower-numbered `column` than its
+      destination. Devices in one column are never wired, silently.
 - [ ] Every circuit has a `cable` name.
 - [ ] The JSON parses.
 - [ ] A preview was shown, with no overlapping blocks and no circuit crossing

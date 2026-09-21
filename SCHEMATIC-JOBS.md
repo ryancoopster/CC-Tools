@@ -113,19 +113,26 @@ type, and a second scheme fighting it would only make a mess.
 
 The thing to understand, because it explains most surprises:
 
-**ConnectCAD connects sockets that line up horizontally.** The circuit list in
-the job says what *should* connect. Where the devices sit is what actually
-connects them. A device a quarter inch too high draws fine and wires to
-nothing.
+**ConnectCAD connects by column, not by height.** The circuit list in the job
+says what *should* connect. Where the devices sit is what actually connects
+them — but the test is horizontal, not vertical. Devices whose blocks overlap
+side to side count as one column, and ConnectCAD refuses to wire within a
+column: if a whole job lands in one, nothing is wired and nothing is reported.
 
-`JOB-SPEC.md` handles this with `align_to`, which lets Claude say "line my input
-up with that output" and leaves the arithmetic to the plug-in. You shouldn't
-have to think about it — but when a circuit comes back **NOT WIRED**, this is
-almost always why.
+Height does not matter. A device a quarter inch high of its feed wires
+perfectly well, and an earlier version of this guide was wrong to say otherwise.
+What matters is **order**: within a column, devices and their sockets pair off
+top to bottom, so the Nth circuit leaving a device takes the Nth free socket on
+the far side. Get the order wrong and every circuit is still drawn — onto the
+wrong sockets, which is much harder to spot than a missing one.
+
+`align_to` still exists, but it is cosmetic: it levels one socket with another
+where a straight run reads better. It is never needed to make a circuit.
 
 One consequence worth knowing: a device fed from two different sources can only
-be lined up with one of them. Claude should tell you when that happens. The
-second circuit is drawn as a device that needs nudging, not a failure.
+be levelled with one of them. That is a cosmetic matter now — both circuits
+still wire. Earlier versions of this guide treated the second as a failure
+needing a nudge; it isn't.
 
 ## Reading the report
 
@@ -145,8 +152,9 @@ Anything listed as `NOT WIRED` genuinely isn't.
 | What you see | Why |
 |---|---|
 | "Cannot draw the job" with a list | The JSON is malformed or inconsistent. Paste the list back to Claude — it's written to be handed straight over. |
-| Devices drawn, 0 circuits wired | Nothing lined up. Check the job has `align_to` on its destination devices. |
-| Some circuits not wired | Usually a device fed from two sources — only one alignment can win. Nudge the others by hand. |
+| Devices drawn, 0 circuits wired | Everything landed in one column. Sources and destinations need different `column` numbers — ConnectCAD will not wire within a column, and says nothing when it declines. |
+| Some circuits not wired | A source socket that is already taken, or a source and destination that overlap horizontally. The report names each one. |
+| Circuits land on the wrong sockets | The order the job lists them in. Pairing is positional: a device's circuits take its targets' sockets top to bottom, so the circuit order and the stacking order must agree. |
 | `no symbol and no sockets listed` | A device with neither a matching symbol nor a socket list. Ask Claude to add sockets. |
 | Devices are the wrong size | The active layer's scale. Everything is drawn on the active layer, sized to that layer — check the report's first few lines. |
 | `CC_DeviceFromShape is unavailable` | No ConnectCAD licence in this session. |

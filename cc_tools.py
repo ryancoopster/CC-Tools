@@ -3614,7 +3614,7 @@ def build_reference(handles):
             'sockets': device_local_sockets(h),
         })
         # Position matters as much as topology here. ConnectCAD wires by
-        # horizontal alignment, and these drawings divide one layer into bands
+        # column membership, and these drawings divide one layer into bands
         # by signal type -- neither is visible in a list of devices and
         # circuits, so an export without coordinates teaches what connects to
         # what but not how a schematic is actually arranged.
@@ -3785,8 +3785,9 @@ def tool_export_reference():
 #   1. CC_DeviceFromShape turns a rectangle into a bare Device.
 #   2. A Socket PIO duplicated into the device's profile group becomes a real
 #      socket -- there is no socket-creation routine, so this is the only way.
-#   3. Selecting two devices and running ConnectSelected wires horizontally
-#      aligned sockets, since script cannot write the association directly.
+#   3. Selecting two devices in different columns and running ConnectSelected
+#      wires their sockets, since script cannot write the association
+#      directly. (Heights need not match; columns must differ.)
 #
 # If 3 fails, a generator cannot wire anything and the whole feature changes
 # shape. Better to learn that from two rectangles than from a finished tool.
@@ -4998,9 +4999,11 @@ def save_prefs(prefs):
 JOB_FILE = 'schematic_job.json'
 PROMPT_FILE = 'schematic_prompt.txt'
 
-# Devices are laid out on a column grid. ConnectCAD wires by horizontal
-# alignment, so a schematic's layout IS its wiring -- devices that talk to each
-# other belong in adjacent columns at compatible heights.
+# Devices are laid out on a column grid. ConnectCAD wires by column
+# membership, so a schematic's layout IS its wiring -- devices that talk to
+# each other belong in DIFFERENT columns, and nothing is wired within one.
+# Their heights are free; only the top-to-bottom order matters, since that is
+# what pairs the sockets.
 #
 # These are the fallbacks used when preferences cannot be read; the live values
 # come from load_prefs().
@@ -5026,8 +5029,8 @@ JOB_FORMAT = '''{
       "name": "SPK 1.01 HL ARRAY 1",
       "make": "Meyer Sound", "model": "TIGRA-L",
       "column": 1,
-      // Vertical position. ConnectCAD wires sockets that line up, so say
-      // WHICH sockets should line up and let the plug-in do the arithmetic:
+      // Optional. Wiring does NOT need sockets to line up -- this only
+      // makes the drawing tidier by levelling one socket with another:
       "align_to": {"device": "SWTCH 4.01 HL UPPER",
                    "socket": "LAN 1", "my_socket": "LAN_IN 1"},
       "sockets": [
@@ -5043,9 +5046,14 @@ JOB_FORMAT = '''{
   ]
 }
 
-Every circuit's destination needs an "align_to" back to its source, or the
-devices are drawn but nothing is wired. A device fed from two sources can only
-be aligned to one of them -- say so rather than leaving it silently unwired.'''
+What wiring actually needs is COLUMNS. ConnectCAD pairs sockets by column
+membership and top-to-bottom order, never by height, so a source must sit in a
+lower-numbered column than what it feeds. If every device lands in one column
+nothing is wired at all, and ConnectCAD says nothing about it.
+
+Order is what to get right instead: the Nth circuit leaving a device takes the
+Nth free socket on the far side, so list a device's sockets and its circuits in
+the order they should connect.'''
 
 
 def job_path():
@@ -6893,8 +6901,8 @@ def read_job(path=None):
                 continue
             ends.append(ids[side['device']])
 
-        # A circuit is wired by horizontal alignment, and sections are separate
-        # bands of the drawing. One that spans two of them cannot ever wire.
+        # Wiring runs between columns within one section, and sections are
+        # separate bands of the drawing. One that spans two cannot ever wire.
         if len(ends) == 2:
             first = (ends[0].get('section') or '').strip()
             second = (ends[1].get('section') or '').strip()
