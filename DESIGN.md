@@ -316,6 +316,30 @@ Bookkeeping lives in `update_state.json`, **not** `preferences.json`, because
 `save_prefs` rewrites that file from `PREF_DEFAULTS` keys alone and would
 destroy any extra key on the next save.
 
+## Dialog items are sized once, at creation
+
+`CreateStaticText` and `CreatePullDownMenu` fix their width from what they are
+given **at creation**. A longer string written later — by `SetItemText`, or by
+`AddChoice` filling a menu in `kSetup` — is silently **cut off on screen**, with
+no error anywhere.
+
+This shipped: the launcher's copy confirmation was created with a 78-character
+placeholder and then written with a 101-character message, so the user saw
+`Paste it into a new` and nothing after it.
+
+Two rules follow. Status lines go through `wrap_status`, at creation *and* at
+every write, so the box is reserved at full size and every message is wrapped
+into it, with an ellipsis marking any real truncation so a cut message never
+looks complete. Pull-down widths come from `menu_width(labels)` rather than a
+literal, so rewording a choice cannot silently clip it — two menus were already
+over, including the Preferences default `(leave as ConnectCAD sets it)`, 29
+characters in a box built for 18.
+
+`mockvs` now records the creation width and raises on an oversized write, so
+this class fails the suite rather than reaching a drawing. It could not before:
+the mock discarded the creation text entirely, which is why the bug shipped
+with tests passing.
+
 ## Finding routines: read the lists, don't grep the binary
 
 Two files on disk document the scripting API, and between them they remove
@@ -420,6 +444,26 @@ Confirmed in a live drawing: device and socket creation, socket placement,
 `ConnectSelected` wiring, circuits reading back with correct endpoints, the
 file dialog, the job path end to end, and that alignment is not required.
 
+Confirmed on a real install, 2026-09-21 — the loader was pasted into the
+Plug-in Manager and ran:
+
+- **HTTPS works from inside Vectorworks**, with a verified chain from
+  `/etc/ssl/cert.pem` and **without** `vs.InstallCertificate()`. The loader
+  fetched `cc_tools.py` and `JOB-SPEC.md` from the repository unaided. This is
+  the fact the whole install and update path rests on, and it was the largest
+  open question.
+- **The loader/payload contract works.** The payload ran identically `exec()`d
+  from a file as it did pasted whole, with `CC_TOOLS_PAYLOAD` reaching it.
+- **`subprocess` and `pbcopy` work**: the clipboard button copied 33,634
+  characters out of Vectorworks.
+- **The manifest path works**: the update check fetched `update.json`, parsed
+  it, compared versions and correctly reported the running version as current.
+
+Still unverified, and not to be read as proven by the above: an actual update
+*install* over an existing copy, the fall-back to `cc_tools.py.previous`, and
+whether a newly created plug-in appears in the Workspace Editor without
+restarting Vectorworks.
+
 Still unverified against a live document:
 
 - **Undo.** The plug-in never calls `BeginUndoEvent`/`EndUndoEvent`, so a run
@@ -435,5 +479,7 @@ Still unverified against a live document:
   rather than a dropdown for that reason — and because a different label symbol
   changes the header height, which socket placement measures.
 - **`AlertQuestion` button mapping** — review mode assumes `1 / 0 / 2 / 3`.
+  The update prompt is written so that only an explicit `1` installs anything,
+  which makes a wrong mapping harmless rather than dangerous.
 
 Work on a copy until you have seen a preview or a report you agree with.

@@ -156,18 +156,36 @@ def build_vs(doc, selected=()):
     def CreateResizableLayout(*a):
         return 1
 
-    def CreateStaticText(*a):
+    # A layout dialog sizes static text when it is CREATED and never grows it,
+    # so a longer string written later with SetItemText is silently cut off on
+    # screen. The mock used to discard the creation text entirely, which meant
+    # no test could ever catch that -- a fix and a non-fix looked identical
+    # here. It now records the widest line, and SetItemText refuses anything
+    # wider.
+    def CreateStaticText(dlg, item, text='', width=-1):
+        longest = max([len(line) for line in str(text).split('\n')] or [0])
+        v.text_width[item] = longest
         return None
 
     def CreateCheckBox(dlg, item, txt):
         state['bools'].setdefault(item, False)
 
+    # Same shape as static text: the width is fixed at creation and AddChoice
+    # supplies the strings later, so a label longer than the width is clipped
+    # in the closed control.
     def CreatePullDownMenu(dlg, item, w):
         state['choices'].setdefault(item, 0)
+        v.menu_width[item] = w
 
     # Records (item, text, position) so a test can prove a pull-down was
     # actually populated, and populated in kSetup rather than at construction.
     def AddChoice(dlg, item, text, position):
+        allowed = v.menu_width.get(item)
+        if allowed is not None and len(str(text)) > allowed:
+            raise AssertionError(
+                'AddChoice puts a %d-character label in a menu created for '
+                '%d -- it would be clipped: %r'
+                % (len(str(text)), allowed, text))
         v.choices.setdefault(item, []).append((text, position))
 
     def SelectChoice(dlg, item, idx, st):
@@ -254,6 +272,14 @@ def build_vs(doc, selected=()):
         state['text'][item] = text
 
     def SetItemText(dlg, item, text):
+        allowed = v.text_width.get(item)
+        if allowed is not None:
+            for line in str(text).split('\n'):
+                if len(line) > allowed:
+                    raise AssertionError(
+                        'SetItemText on item %s writes %d characters into a '
+                        'box created for %d -- it would be cut off on screen: '
+                        '%r' % (item, len(line), allowed, line))
         state['text'][item] = text
 
     def GetItemText(dlg, item):
@@ -308,6 +334,8 @@ def build_vs(doc, selected=()):
     v.file_name = 'MOCK.vwx'
     v.cc_rename_works = True
     v.choices = {}
+    v.text_width = {}
+    v.menu_width = {}
     v.classes = set()
     v.active_class = 'None'
     v.object_class = {}

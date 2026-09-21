@@ -40,7 +40,7 @@ BASE_FOLDER = os.path.expanduser('~/Documents/CC Tools')
 # The running version. The update check compares this against the version
 # published in update.json at the top of the repository, so the two must be
 # bumped together -- tools/release.py does both and refuses to do one.
-CC_TOOLS_VERSION = '0.9.3'
+CC_TOOLS_VERSION = '0.9.4'
 
 TYPE_GROUP = 11
 TYPE_PIO   = 86
@@ -3187,7 +3187,7 @@ def ask_spell_options():
     vs.CreateStaticText(dlg, sScopeLbl, 'Look at:', -1)
     vs.CreatePullDownMenu(dlg, sScopePopup, 26)
     vs.CreateStaticText(dlg, sActionLbl, 'What to do:', -1)
-    vs.CreatePullDownMenu(dlg, sActionPopup, 40)
+    vs.CreatePullDownMenu(dlg, sActionPopup, menu_width(SPELL_ACTIONS))
     vs.CreateCheckBox(dlg, sPreviewChk, 'Preview only - report, change nothing')
     vs.CreateStaticText(
         dlg, sNoteTxt,
@@ -3210,14 +3210,8 @@ def ask_spell_options():
             vs.AddChoice(dlg, sScopePopup, 'Whole document', 2)
             vs.SelectChoice(dlg, sScopePopup, SCOPE_DOCUMENT, True)
 
-            vs.AddChoice(dlg, sActionPopup,
-                         'Review all terms in a list (recommended)', 0)
-            vs.AddChoice(dlg, sActionPopup,
-                         'Review suspected misspellings one at a time', 1)
-            vs.AddChoice(dlg, sActionPopup,
-                         'Export suspects to CSV (change nothing)', 2)
-            vs.AddChoice(dlg, sActionPopup,
-                         'Export all terms to CSV (change nothing)', 3)
+            for position, label in enumerate(SPELL_ACTIONS):
+                vs.AddChoice(dlg, sActionPopup, label, position)
             vs.AddChoice(dlg, sActionPopup,
                          'Apply replacements from vocabulary.csv', 4)
             vs.AddChoice(dlg, sActionPopup,
@@ -3309,6 +3303,15 @@ def apply_corrections(handles, token_map, phrase_map, newly_ignored, settings,
 
 
 # ─── Menu tool: Spell Check ──────────────────────────────────────────────────
+# The Spell Check actions, in index order -- the handler reads the selected
+# index, and the menu's width is derived from these, so they live in one place.
+SPELL_ACTIONS = (
+    'Review all terms in a list (recommended)',
+    'Review suspected misspellings one at a time',
+    'Export suspects to CSV (change nothing)',
+    'Export all terms to CSV (change nothing)',
+)
+
 def tool_spellcheck():
     """Returns (status, summary)."""
     settings = ask_spell_options()
@@ -4933,6 +4936,10 @@ PREF_DEFAULTS = {
 CIRCUIT_TYPES = ['', 'rounded', 'polyline', 'chamfer']
 CIRCUIT_TYPE_ARROW = 'arrow'
 
+# What the blank CircuitType is shown as. Named because the pull-down's width
+# is derived from it -- it is far longer than any actual type name.
+CIRCUIT_TYPE_ANY = '(leave as ConnectCAD sets it)'
+
 # Numeric preferences, with the range each is clamped to. A zero column pitch
 # would stack every device in one place, and a huge one would scatter a job
 # across a mile of drawing, so both ends are bounded.
@@ -6248,16 +6255,21 @@ def tool_preferences():
                       '{:g}'.format(prefs['circuit_stagger_inches']), 10)
 
     vs.CreateStaticText(dialog, pTypeLbl, 'Circuit line mode:', -1)
-    # Filled in kSetup, for the same reason as the search dialog's.
-    vs.CreatePullDownMenu(dialog, pTypePopup, 18)
+    # Filled in kSetup, for the same reason as the search dialog's. The width
+    # comes from the labels because the blank value is shown as a sentence,
+    # which is much longer than any CircuitType name.
+    vs.CreatePullDownMenu(dialog, pTypePopup,
+                          menu_width([CIRCUIT_TYPE_ANY] + list(CIRCUIT_TYPES)))
 
     vs.CreateStaticText(dialog, pLabelLbl, 'Device label symbol:', -1)
     vs.CreateEditText(dialog, pLabelEdit, prefs['label_symbol'], 22)
 
     vs.CreateCheckBox(dialog, pUpdChk, 'Check GitHub for CC Tools updates')
     vs.CreateStaticText(dialog, pUpdLbl, 'How often:', -1)
-    vs.CreatePullDownMenu(dialog, pUpdPop, 18)
-    vs.CreateStaticText(dialog, pUpdState, update_status_line().ljust(72), -1)
+    vs.CreatePullDownMenu(dialog, pUpdPop,
+                          menu_width([l for l, _ in UPDATE_INTERVALS]))
+    vs.CreateStaticText(dialog, pUpdState,
+                        wrap_status(update_status_line(), limit=2), -1)
 
     vs.CreateStaticText(
         dialog, pNote,
@@ -6290,7 +6302,7 @@ def tool_preferences():
         if item == kSetup:
             for position, name in enumerate(CIRCUIT_TYPES):
                 vs.AddChoice(dialog, pTypePopup,
-                             name or '(leave as ConnectCAD sets it)', position)
+                             name or CIRCUIT_TYPE_ANY, position)
             current = prefs.get('circuit_type', '')
             index = CIRCUIT_TYPES.index(current) if current in CIRCUIT_TYPES else 0
             vs.SelectChoice(dialog, pTypePopup, index, True)
@@ -7981,6 +7993,68 @@ def clipboard_commands(text, platform, osname):
             (['xsel', '--clipboard', '--input'], text.encode('utf-8'))]
 
 
+# A layout dialog's static text is sized when it is CREATED, from the text it
+# is created with, and never grows. A longer string written later with
+# SetItemText is silently CUT OFF -- which is how the copy confirmation lost
+# its last four words on screen. Every status line therefore goes through
+# wrap_status, both at creation (to reserve the space) and at every write.
+STATUS_WIDTH = 74
+STATUS_LINES = 3
+
+
+def menu_width(labels, minimum=12):
+    """Width for a pull-down, from the longest label it will hold.
+
+    CreatePullDownMenu fixes the width when the menu is created, the same way
+    static text does, so a label longer than the number passed here is cut off
+    in the closed menu. Deriving it means rewording a choice cannot silently
+    clip it.
+    """
+    return max([minimum] + [len(label) for label in labels]) + 2
+
+
+def wrap_status(text, width=STATUS_WIDTH, limit=STATUS_LINES):
+    """Fit a message into a fixed-size status line, padded to hold its shape.
+
+    Wraps on words, hard-splits a word too long to fit (a file path with no
+    spaces), keeps at most `limit` lines and marks the cut with an ellipsis so
+    a truncated message never looks like a complete one.
+    """
+    lines = []
+    for paragraph in str(text or '').split('\n'):
+        words = paragraph.split()
+        if not words:
+            continue
+        current = ''
+        for word in words:
+            while len(word) > width:
+                if current:
+                    lines.append(current)
+                    current = ''
+                lines.append(word[:width - 1] + '-')
+                word = word[width - 1:]
+            candidate = (current + ' ' + word).strip()
+            if len(candidate) <= width:
+                current = candidate
+            else:
+                if current:
+                    lines.append(current)
+                current = word
+        if current:
+            lines.append(current)
+
+    if not lines:
+        lines = ['']
+    if len(lines) > limit:
+        lines = lines[:limit]
+        # Room for the ellipsis itself, or the marker pushes the line over the
+        # width it was meant to signal.
+        lines[-1] = lines[-1][:width - 3].rstrip() + '...'
+    while len(lines) < limit:
+        lines.append('')
+    return '\n'.join(line[:width].ljust(width) for line in lines)
+
+
 def copy_to_clipboard(text):
     """Put text on the system clipboard. Returns (ok, detail).
 
@@ -8517,7 +8591,7 @@ def update_status_line():
         except Exception:
             parts.append('last checked at an unreadable time')
     if state.get('last_error'):
-        parts.append('last attempt failed: {}'.format(state['last_error'])[:90])
+        parts.append('last attempt failed: {}'.format(state['last_error']))
     elif state.get('skipped_version'):
         parts.append('skipping {}'.format(state['skipped_version']))
     return '.  '.join(parts)
@@ -8571,7 +8645,8 @@ def ask_update_consent(prefs):
         'You can change this at any time in CC Tools > Preferences.', -1)
     vs.CreateCheckBox(dialog, uConsentChk, 'Check GitHub for updates')
     vs.CreateStaticText(dialog, uConsentLbl, 'How often:', -1)
-    vs.CreatePullDownMenu(dialog, uConsentPop, 18)
+    vs.CreatePullDownMenu(dialog, uConsentPop,
+                          menu_width([l for l, _ in UPDATE_INTERVALS]))
 
     vs.SetFirstLayoutItem(dialog, uConsentTxt)
     vs.SetBelowItem(dialog, uConsentTxt, uConsentChk, 0, 12)
@@ -8774,8 +8849,8 @@ def ask_which_tools():
     vs.CreatePushButton(dlg, lUpdBtn, 'Check for updates')
     vs.CreateStaticText(
         dlg, lSpecTxt,
-        'Puts the spec on the clipboard to paste into a new chat.'.ljust(78),
-        -1)
+        wrap_status('Copy the spec to paste into a new Claude chat, or see '
+                    'whether a newer CC Tools has been published.'), -1)
 
     vs.SetFirstLayoutItem(dlg, lToolLbl)
     vs.SetBelowItem(dlg, lToolLbl, lNormChk, 0, 0)
@@ -8819,13 +8894,13 @@ def ask_which_tools():
             # a button labelled "Check for updates" that quietly did nothing
             # because a timer had not elapsed would be a lie.
             installed, status = run_update_check(force=True)
-            vs.SetItemText(dlg, lSpecTxt,
-                           status or 'No update information was available.')
+            vs.SetItemText(dlg, lSpecTxt, wrap_status(
+                status or 'No update information was available.'))
         elif item == lSpecBtn:
             # A push button reports and leaves the dialog open, so the result
             # goes to the line under it rather than to an alert the user would
             # have to dismiss before carrying on.
-            vs.SetItemText(dlg, lSpecTxt, copy_job_spec())
+            vs.SetItemText(dlg, lSpecTxt, wrap_status(copy_job_spec()))
         elif item == kOK:
             picked = []
             # Fixed order, independent of which boxes the user ticked first.

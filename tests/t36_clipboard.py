@@ -160,7 +160,17 @@ fake, calls = fake_subprocess()
 sys.modules['subprocess'] = fake
 
 texts = {}
-vs.SetItemText = lambda dlg, item, text: texts.__setitem__(item, text)
+# Wrap rather than replace: the mock's width guard must still run, or this
+# test would pass on a status line that is cut off on screen.
+_real_set_item_text = vs.SetItemText
+
+
+def recording_set_item_text(dlg, item, text):
+    _real_set_item_text(dlg, item, text)
+    texts[item] = text
+
+
+vs.SetItemText = recording_set_item_text
 
 
 def run_clicking_copy(dlg, handler):
@@ -187,6 +197,115 @@ check('T4 its ids do not collide with any other launcher item',
            m.lHintTxt, m.lNormChk, m.lMatchChk, m.lSpellChk, m.lSearchChk,
            m.lReplaceChk, m.lReconChk, m.lJobChk, m.lPrefsChk, m.lPromptChk,
            m.lDumpChk, m.lRefChk, m.lProbeChk}) == 18)
+
+
+# ── T5: status text must fit the box it is drawn in ──────────────────────
+# A layout dialog sizes a static text item when it is CREATED and never grows
+# it. The copy confirmation was 101 characters in a box built for 78, so the
+# user saw "Paste it into a new" and nothing after it.
+W = m.STATUS_WIDTH
+L = m.STATUS_LINES
+
+CUT_OFF = ('Copied JOB-SPEC.md (33,634 characters). Paste it into a new '
+           'Claude chat, then describe the schematic.')
+wrapped = m.wrap_status(CUT_OFF)
+check('T5 the message that was cut off now fits',
+      all(len(line) <= W for line in wrapped.split('\n')),
+      [len(l) for l in wrapped.split('\n')])
+check('T5 and none of its words are lost',
+      ''.join(wrapped.split()) == ''.join(CUT_OFF.split()),
+      wrapped)
+check('T5 every status line is exactly the reserved width',
+      all(len(line) == W for line in wrapped.split('\n')))
+check('T5 and exactly the reserved number of lines',
+      len(wrapped.split('\n')) == L, wrapped.count('\n') + 1)
+
+# The item is created with a placeholder; it must reserve the full width, or
+# the box is too small before a single message is written.
+created = m.wrap_status('short')
+check('T5 the creation placeholder reserves full width and height',
+      len(created.split('\n')) == L
+      and all(len(line) == W for line in created.split('\n')))
+
+# An unbounded path or error string must not overflow.
+long_path = '/Users/someone/Documents/CC Tools/app/' + 'x' * 200 + '.py'
+wrapped = m.wrap_status('Could not reach the clipboard. The file is at '
+                        + long_path)
+check('T5 a path with no spaces is hard-split rather than overflowing',
+      all(len(line) <= W for line in wrapped.split('\n')),
+      [len(l) for l in wrapped.split('\n')])
+check('T5 and the line count is still capped',
+      len(wrapped.split('\n')) == L)
+check('T5 a message too long to show is marked as cut, not left looking whole',
+      wrapped.split('\n')[-1].rstrip().endswith('...'),
+      repr(wrapped.split('\n')[-1][-12:]))
+
+# Multi-line messages (the updater writes these) must survive.
+multi = m.wrap_status('Updated to 0.9.3.\n\nPick CC Tools from the menu '
+                      'again to use it.')
+check('T5 a multi-line message keeps its words',
+      'Updated' in multi and 'menu' in multi, multi)
+check('T5 and still fits', all(len(l) <= W for l in multi.split('\n')))
+
+check('T5 empty text still reserves the box',
+      len(m.wrap_status('').split('\n')) == L
+      and all(len(l) == W for l in m.wrap_status('').split('\n')))
+
+# Every message the launcher can put in that line must fit in the box.
+for message in [m.copy_job_spec(),
+                'CC Tools 0.9.3 is the latest version.',
+                'No update information was available.',
+                'Could not check for updates: URLError: [Errno 8] nodename '
+                'nor servname provided, or not known']:
+    fitted = m.wrap_status(message)
+    check('T5 fits: %s' % message[:34],
+          all(len(line) == W for line in fitted.split('\n'))
+          and len(fitted.split('\n')) == L)
+
+
+# ── T6: the mock itself catches this class, or the tests above prove little ──
+# mockvs used to discard the creation text, so a fix and a non-fix looked
+# identical to the suite. These assert the new guard actually fires.
+vs.SetItemText = _real_set_item_text      # the guarded one, not the recorder
+caught = ''
+try:
+    vs.CreateStaticText(1, 9901, 'x' * 20, -1)
+    vs.SetItemText(1, 9901, 'y' * 21)
+except AssertionError as err:
+    caught = str(err)
+check('T6 writing more text than the box was built for now fails a test',
+      'cut off' in caught, caught or 'nothing raised')
+
+caught = ''
+try:
+    vs.CreateStaticText(1, 9902, 'x' * 20, -1)
+    vs.SetItemText(1, 9902, 'y' * 20)
+except AssertionError as err:
+    caught = str(err)
+check('T6 and text that fits does not', caught == '', caught)
+
+caught = ''
+try:
+    vs.CreatePullDownMenu(1, 9903, 10)
+    vs.AddChoice(1, 9903, 'a label far too long', 0)
+except AssertionError as err:
+    caught = str(err)
+check('T6 a menu label wider than its menu fails a test',
+      'clipped' in caught, caught or 'nothing raised')
+
+caught = ''
+try:
+    vs.CreatePullDownMenu(1, 9904, 30)
+    vs.AddChoice(1, 9904, 'a label that fits', 0)
+except AssertionError as err:
+    caught = str(err)
+check('T6 and a label that fits does not', caught == '', caught)
+
+# The real launcher must survive its own guard, with a real message in place.
+check('T6 the launcher status line holds every message it can show',
+      all(len(line) <= m.STATUS_WIDTH
+          for msg in [m.copy_job_spec(), 'CC Tools 0.9.4 is the latest version.']
+          for line in m.wrap_status(msg).split('\n')))
 
 clear_spec()
 if real is not None:

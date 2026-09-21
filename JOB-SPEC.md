@@ -4,6 +4,10 @@
 job file that the CC Tools plug-in can draw in Vectorworks, and the curated
 list of devices with their real connectors and physical properties.
 
+The easiest way to hand it over is the **Copy JOB-SPEC.md for Claude** button
+at the bottom of the CC Tools launcher — it copies the copy the plug-in
+actually reads, and CC Tools keeps that one up to date.
+
 Then describe the schematic you want, and Claude replies with a `.json` file
 to download.
 
