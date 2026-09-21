@@ -106,4 +106,58 @@ check('T8 the limitation is written down, not glossed',
       or 'There is no timer' in srcfile,
       'a feature that cannot exist should say so where someone will read it')
 
+# ── T9: an unrelated CC Tools run must not erase a pending rename ────────
+# The snapshot refreshes at the end of EVERY run. Advancing it on a socket
+# whose name has drifted would destroy the only record that a rename happened,
+# leaving the panel connector stale with no way left to find it.
+m, vs = build()
+m.tool_reconcile_panels()                       # first snapshot
+skt = [h for h in m.walk_document() if m.classify(h) == 'socket'][0]
+m.write_field(skt, 'name', 'TRUNK - 25')
+m.write_field(skt, 'tag', 'TRUNK - 25')
+
+for _ in range(3):
+    m.save_socket_snapshot()                    # three unrelated runs
+hs, par = m.walk_document(with_parents=True)
+renames = m.find_socket_renames(hs, par, m.load_socket_snapshot())
+check('T9 the rename survives unrelated runs', len(renames) == 1, repr(renames))
+check('T9 the snapshot still holds the OLD name',
+      any(v['name'] == 'ISL - 25' for v in m.load_socket_snapshot().values()),
+      repr(m.load_socket_snapshot()))
+check('T9 and it is counted as pending', m.save_socket_snapshot.pending == 1,
+      repr(m.save_socket_snapshot.pending))
+
+# New sockets must still be recorded while a rename is pending.
+device = [h for h in hs if m.classify(h) == 'device'][0]
+device.children.append(Obj('Socket', {'type': 'IN', 'name': 'NEW 1',
+                                      'tag': 'NEW 1', 'signal': 'LAN',
+                                      'connector': 'EC-6A', 'user1': ''}))
+m.save_socket_snapshot()
+snap = m.load_socket_snapshot()
+check('T9 a new socket is still added', any(v['name'] == 'NEW 1'
+                                            for v in snap.values()), repr(snap))
+check('T9 without disturbing the pending rename',
+      any(v['name'] == 'ISL - 25' for v in snap.values()), repr(snap))
+
+# ── T10: settling advances the record, and only for what settled ─────────
+uuid = m.object_uuid(skt)
+m.save_socket_snapshot(settled=[uuid])
+check('T10 a settled rename advances',
+      any(v['name'] == 'TRUNK - 25' for v in m.load_socket_snapshot().values()),
+      repr(m.load_socket_snapshot()))
+hs, par = m.walk_document(with_parents=True)
+check('T10 and stops being reported',
+      m.find_socket_renames(hs, par, m.load_socket_snapshot()) == [])
+
+# A rename with a reference left behind must stay on the books.
+m2, _vs = build()
+m2.tool_reconcile_panels()
+s2 = [h for h in m2.walk_document() if m2.classify(h) == 'socket'][0]
+m2.write_field(s2, 'name', 'TRUNK - 25')
+m2.save_socket_snapshot(settled=[])             # nothing settled
+hs2, par2 = m2.walk_document(with_parents=True)
+check('T10 an unsettled rename stays visible',
+      len(m2.find_socket_renames(hs2, par2, m2.load_socket_snapshot())) == 1,
+      'one unticked reference keeps the whole rename outstanding')
+
 R.report_and_exit()

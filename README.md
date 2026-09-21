@@ -98,8 +98,18 @@ uuid whose name has changed is a rename — reliably, without guessing from the
 names themselves. The panel connectors pointing at the old name are then
 brought up to date, shown in the same review table as Find and Replace.
 
-The snapshot is refreshed at the end of **every** CC Tools run, so the window
-it covers is "since you last used these tools" without anyone maintaining it.
+The snapshot records the last **reconciled** state, not the last observed one,
+and that distinction matters: it is refreshed at the end of every CC Tools run,
+but a socket whose name has drifted from its record is a rename nobody has
+dealt with yet, so its entry is left alone. Rename a socket, run Normalise or
+Spell Check or anything else half a dozen times, reconcile next week — the
+rename is still there waiting. Advancing the record on an unrelated run would
+erase the only evidence it happened.
+
+A rename is only settled once **every** reference to the old name has been
+updated. Untick one row and the rename stays on the books, so a later run can
+finish it.
+
 The first run on a drawing has nothing to compare against and says so.
 
 Worth binding to a keyboard shortcut if you rename in the OIP often: it is one

@@ -5212,23 +5212,57 @@ def snapshot_sockets(handles=None, parents=None):
     return out
 
 
-def save_socket_snapshot(sockets=None):
-    """Record the current socket names. Returns how many were recorded.
+def save_socket_snapshot(sockets=None, settled=None):
+    """Record where the sockets stand. Returns how many are recorded.
+
+    The snapshot holds the last RECONCILED state, not the last observed one,
+    and the difference is the whole point. A socket whose name has drifted from
+    its recorded name is a rename nobody has dealt with yet -- so its entry is
+    LEFT ALONE, however many times this is called.
+
+    Advancing it instead would destroy the evidence: rename a socket in the
+    OIP, run any other CC Tools command, and the pending rename would vanish
+    from the record with the panel connector still pointing at a name that no
+    longer exists and no way left to discover it.
+
+    `settled` is the set of uuids whose references are now in sync, which is
+    what lets a reconcile move the record forward.
 
     Keyed by document, so two drawings open in turn do not read each other's
     history as a pile of renames."""
     import json
     if sockets is None:
         sockets = snapshot_sockets()
+    settled = set(settled or ())
+
+    previous = load_socket_snapshot()
+    merged = {}
+    pending = 0
+    for uuid, current in sockets.items():
+        was = previous.get(uuid)
+        if (was and uuid not in settled
+                and was.get('name') != current.get('name')):
+            merged[uuid] = was          # an unreconciled rename; keep the trail
+            pending += 1
+        else:
+            merged[uuid] = current
+
     try:
         stored = load_snapshot_file()
-        stored[current_document_key()] = sockets
+        # Sockets that no longer exist are dropped: a deleted socket has
+        # nothing to carry forward, and keeping it would grow the file forever.
+        stored[current_document_key()] = merged
         os.makedirs(BASE_FOLDER, exist_ok=True)
         with open(snapshot_path(), 'w', encoding='utf-8') as f:
             json.dump(stored, f, indent=1)
     except Exception:
         return 0
-    return len(sockets)
+    save_socket_snapshot.pending = pending
+    return len(merged)
+
+
+# Renames recorded but not yet reconciled, as of the last save.
+save_socket_snapshot.pending = 0
 
 
 def current_document_key():
@@ -5293,7 +5327,8 @@ def tool_reconcile_panels():
 
     renames = find_socket_renames(handles, parents, snapshot)
     if not renames:
-        save_socket_snapshot(snapshot_sockets(handles, parents))
+        save_socket_snapshot(snapshot_sockets(handles, parents),
+                             settled=snapshot.keys())
         vs.AlrtDialog('No socket has been renamed since the last run, so every '
                       'panel connector is already current.')
         return 'done', None
@@ -5307,7 +5342,10 @@ def tool_reconcile_panels():
     sync_edits = dedupe_edits(stand_ins, sync_edits)
 
     if not sync_edits:
-        save_socket_snapshot(snapshot_sockets(handles, parents))
+        # Nothing refers to them, so there is nothing outstanding: settled.
+        save_socket_snapshot(
+            snapshot_sockets(handles, parents),
+            settled=[object_uuid(r['handle']) for r in renames])
         vs.AlrtDialog(
             '{} socket(s) were renamed, but nothing points at them by name, so '
             'there is nothing to bring up to date.'.format(len(renames)))
@@ -5330,7 +5368,19 @@ def tool_reconcile_panels():
                         c['is_link_name']) for c in picked]
     applied = apply_edits(chosen)
     reset = reset_circuits()
-    recorded = save_socket_snapshot(snapshot_sockets())
+
+    # A rename is settled only when EVERY reference to its old name was
+    # applied. One left behind -- unticked, or refused -- keeps the whole
+    # rename on the books, so a later run can still finish the job.
+    applied_keys = set((e['handle'], e['field']) for e in applied)
+    settled = []
+    for rename in renames:
+        outstanding = [e for e in sync_edits
+                       if e['old'] == rename['old']
+                       and (e['handle'], e['field']) not in applied_keys]
+        if not outstanding:
+            settled.append(object_uuid(rename['handle']))
+    recorded = save_socket_snapshot(snapshot_sockets(), settled=settled)
 
     lines = report_header('RECONCILE PANEL CONNECTORS')
     lines.append('Sockets renamed since the last run: {}'.format(len(renames)))
@@ -5339,6 +5389,14 @@ def tool_reconcile_panels():
     lines.append('Applied:                            {}'.format(len(applied)))
     lines.append('Circuits reset:                     {}'.format(reset))
     lines.append('Snapshot refreshed:                 {} socket(s)'.format(recorded))
+    lines.append('Renames settled:                    {} of {}'.format(
+        len(settled), len(renames)))
+    if len(settled) < len(renames):
+        lines.append('')
+        lines.append('The rest stay on the books: a reference was left '
+                     'unticked or refused, so')
+        lines.append('the rename is still recorded and a later run can finish '
+                     'it.')
     lines.append('')
     lines.append('RENAMES DETECTED')
     for r in renames[:40]:
@@ -8022,6 +8080,9 @@ def run_cc_tools():
     # reconcile tool: the window this covers should be "since you last used
     # these tools", which nobody should have to maintain by hand.
     try:
+        # No `settled`: this records NEW sockets and leaves every pending
+        # rename exactly where it is. Using an unrelated run to advance the
+        # record would erase the evidence Reconcile depends on.
         save_socket_snapshot()
     except Exception:
         pass
