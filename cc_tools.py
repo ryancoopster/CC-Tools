@@ -40,7 +40,7 @@ BASE_FOLDER = os.path.expanduser('~/Documents/CC Tools')
 # The running version. The update check compares this against the version
 # published in update.json at the top of the repository, so the two must be
 # bumped together -- tools/release.py does both and refuses to do one.
-CC_TOOLS_VERSION = '0.9.2'
+CC_TOOLS_VERSION = '0.9.3'
 
 TYPE_GROUP = 11
 TYPE_PIO   = 86
@@ -8084,6 +8084,8 @@ UPDATE_MANIFEST_URL = ('https://raw.githubusercontent.com/{}/{}/update.json'
                        .format(UPDATE_REPO, UPDATE_BRANCH))
 UPDATE_PAYLOAD_URL = ('https://raw.githubusercontent.com/{}/{}/cc_tools.py'
                       .format(UPDATE_REPO, UPDATE_BRANCH))
+UPDATE_SPEC_URL = ('https://raw.githubusercontent.com/{}/{}/JOB-SPEC.md'
+                   .format(UPDATE_REPO, UPDATE_BRANCH))
 
 UPDATE_STATE_FILE = 'update_state.json'
 UPDATE_TIMEOUT = 2.5          # the manifest is ~300 bytes; this is generous
@@ -8177,6 +8179,9 @@ UPDATE_STATE_DEFAULTS = {
     'failures': 0,
     'last_error': '',
     'consent_asked': False,
+    # The device list as CC Tools last wrote it. Anything that no longer
+    # matches this has been edited by hand, and is not ours to overwrite.
+    'spec_sha': '',
 }
 
 
@@ -8273,6 +8278,21 @@ def fetch_manifest():
     if not version:
         return None, 'the version file names no version'
     manifest['version'] = version
+
+    # The loader that exec'd us has a contract version. A payload published
+    # for a newer loader must not be offered at all: installing it would work
+    # and then fail somewhere arbitrary on the next run.
+    try:
+        manifest['min_stub'] = int(manifest.get('min_stub') or 1)
+    except (TypeError, ValueError):
+        manifest['min_stub'] = 1
+    running = globals().get('CC_TOOLS_STUB_VERSION')
+    if isinstance(running, int) and manifest['min_stub'] > running:
+        return None, ('version {} needs a newer loader than the one pasted '
+                      'into the Plug-in Manager (it needs {}, this is {}). '
+                      'Paste tools/stub.py from the repository again.'
+                      .format(version, manifest['min_stub'], running))
+
     notes = manifest.get('notes')
     manifest['notes'] = ([str(n) for n in notes]
                          if isinstance(notes, list) else [])
@@ -8383,6 +8403,66 @@ def install_update(source):
             pass
         return False, 'could not replace {}: {}'.format(target, err)
     return True, kept
+
+
+def refresh_spec(state):
+    """Bring the curated device list up to date with the program.
+
+    Returns (state, note). Only ever replaces a file CC Tools wrote and the
+    user has not touched since. The spec lives in a folder people are told to
+    edit by hand, and quietly overwriting someone's additions would be worse
+    than leaving them on an old list -- so the hash of what was last written
+    is recorded, and anything that no longer matches is left alone and said
+    out loud.
+
+    It writes to golden_path(), so a user who saved the list as devices.md
+    keeps that name and the reader and the updater cannot disagree about
+    which file is in force.
+    """
+    import hashlib
+    target = golden_path()
+    name = os.path.basename(target)
+
+    data, error = fetch_url(UPDATE_SPEC_URL, timeout=UPDATE_DOWNLOAD_TIMEOUT)
+    if error:
+        return state, '{} could not be downloaded ({})'.format(name, error)
+    try:
+        text = data.decode('utf-8')
+    except Exception:
+        return state, '{} was not valid UTF-8, so it was left alone'.format(name)
+    digest = hashlib.sha256(data).hexdigest()
+
+    existing = None
+    if os.path.exists(target):
+        try:
+            with open(target, 'rb') as handle:
+                existing = hashlib.sha256(handle.read()).hexdigest()
+        except Exception:
+            return state, '{} could not be read, so it was left alone'.format(name)
+
+    if existing == digest:
+        return dict(state, spec_sha=digest), ''
+
+    recorded = state.get('spec_sha') or ''
+    if existing is not None and recorded and existing != recorded:
+        return state, ('{} has your own changes in it and was left alone -- '
+                       'the newer device list is in the repository'.format(name))
+    if existing is not None and not recorded:
+        return state, ('{} was already here and may be yours, so it was left '
+                       'alone -- delete it and update again to take the '
+                       'current device list'.format(name))
+
+    try:
+        os.makedirs(BASE_FOLDER, exist_ok=True)
+        temporary = target + '.new'
+        with open(temporary, 'w', encoding='utf-8', newline='\n') as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+    except Exception as err:
+        return state, '{} could not be saved ({})'.format(name, err)
+    return dict(state, spec_sha=digest), 'device list updated'
 
 
 def update_notes_text(manifest, limit=14):
@@ -8571,7 +8651,10 @@ def offer_update(manifest, state):
 
     state['skipped_version'] = ''
     state['last_error'] = ''
+    state, spec_note = refresh_spec(state)
     kept = '\nThe previous version is kept at {}'.format(detail) if detail else ''
+    if spec_note and spec_note != 'device list updated':
+        kept += '\n\n' + spec_note
     return True, ('Updated to {}.\n\nPick CC Tools from the menu again to '
                   'use it.{}'.format(manifest['version'], kept)), state
 

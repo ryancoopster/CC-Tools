@@ -250,5 +250,43 @@ check('T4 with no fallback it still explains itself',
 check('T4 and tells the user how to get a fresh copy',
       any('download a fresh' in a for a in alerts), alerts)
 
+
+# ── T5: the loader refuses a payload that needs a newer loader ───────────
+clean()
+data = GOOD.encode('utf-8')
+fake_net(manifest={'version': '9.9.9', 'bytes': len(data),
+                   'sha256': hashlib.sha256(data).hexdigest(),
+                   'min_stub': stub.CC_TOOLS_STUB_VERSION + 1})
+ok, message = stub._download()
+check('T5 a payload needing a newer loader is refused',
+      ok is False and 'newer loader' in message, message)
+check('T5 and nothing is written', not os.path.exists(stub.PAYLOAD))
+check('T5 and it says where to get the new loader',
+      'tools/stub.py' in message, message)
+
+clean()
+fake_net(manifest={'version': '9.9.9', 'bytes': len(data),
+                   'sha256': hashlib.sha256(data).hexdigest(),
+                   'min_stub': stub.CC_TOOLS_STUB_VERSION})
+ok, message = stub._download()
+check('T5 a payload this loader can run is installed', ok is True, message)
+
+# The loader must record the spec hash, or the payload's updater will later
+# see a file it has no record of and never refresh the device list again.
+clean()
+fake_net()
+stub._download()
+state_path = os.path.join(SANDBOX, 'update_state.json')
+recorded = {}
+if os.path.exists(state_path):
+    recorded = json.load(open(state_path, encoding='utf-8'))
+check('T5 the loader records the device list it wrote',
+      recorded.get('spec_sha')
+      == hashlib.sha256(SPEC_BODY.encode()).hexdigest(), recorded)
+check('T5 and uses the same key the payload reads',
+      "'spec_sha'" in code_only(CC_SRC))
+if os.path.exists(state_path):
+    os.remove(state_path)
+
 clean()
 R.report_and_exit()

@@ -414,5 +414,113 @@ if os.path.exists(mpath):
 else:
     check('T11 no update.json published yet', True)
 
+
+# ── T12: a payload needing a newer loader is refused, not installed ───────
+clean()
+m.save_update_state(dict(m.UPDATE_STATE_DEFAULTS, consent_asked=True))
+m.__dict__['CC_TOOLS_STUB_VERSION'] = 2
+stub_fetch(payload=GOOD, manifest=dict(good_manifest, min_stub=5))
+manifest, error = m.fetch_manifest()
+check('T12 a payload needing a newer loader is refused',
+      manifest is None and 'newer loader' in error, error)
+check('T12 and the message says both versions',
+      '5' in error and '2' in error, error)
+
+stub_fetch(payload=GOOD, manifest=dict(good_manifest, min_stub=2))
+manifest, error = m.fetch_manifest()
+check('T12 a payload the loader can run is accepted',
+      manifest is not None and not error, error)
+
+stub_fetch(payload=GOOD, manifest=dict(good_manifest, min_stub='nonsense'))
+manifest, error = m.fetch_manifest()
+check('T12 an unparseable min_stub falls back to 1 rather than blocking',
+      manifest is not None and manifest['min_stub'] == 1, error)
+del m.__dict__['CC_TOOLS_STUB_VERSION']
+
+
+# ── T13: the device list refreshes, but never over the user's own edits ───
+import hashlib as _h
+SPEC_BODY = '# spec v2\n'
+SPEC_PATH = os.path.join(m.BASE_FOLDER, 'JOB-SPEC.md')
+
+
+def spec_net(body=SPEC_BODY, error=''):
+    def fetch(url, timeout=None, limit=None):
+        if error:
+            return None, error
+        return body.encode('utf-8'), ''
+    m.fetch_url = fetch
+
+
+def clear_specs():
+    for name in m.GOLDEN_FILES:
+        path = os.path.join(m.BASE_FOLDER, name)
+        if os.path.exists(path):
+            os.remove(path)
+
+
+clear_specs()
+spec_net()
+state, note = m.refresh_spec(dict(m.UPDATE_STATE_DEFAULTS))
+check('T13 a missing device list is written', note == 'device list updated'
+      and os.path.exists(m.golden_path()), (note, m.golden_path()))
+check('T13 and its hash is recorded',
+      state['spec_sha'] == _h.sha256(SPEC_BODY.encode()).hexdigest())
+
+# Unchanged since we wrote it -> replaced by the newer one.
+spec_net('# spec v3\n')
+state, note = m.refresh_spec(state)
+check('T13 an untouched list is brought up to date',
+      note == 'device list updated'
+      and open(m.golden_path(), encoding='utf-8').read() == '# spec v3\n', note)
+
+# Edited by hand -> left alone, and said out loud.
+with open(m.golden_path(), 'w', encoding='utf-8') as f:
+    f.write('# spec v3 plus MY OWN DEVICE\n')
+spec_net('# spec v4\n')
+state2, note = m.refresh_spec(state)
+check('T13 a hand-edited list is NOT overwritten',
+      'your own changes' in note, note)
+check('T13 and the edit survives',
+      'MY OWN DEVICE' in open(m.golden_path(), encoding='utf-8').read())
+check('T13 and the recorded hash is not advanced past it',
+      state2['spec_sha'] == state['spec_sha'])
+
+# A list that was already there before CC Tools knew about it.
+clear_specs()
+with open(SPEC_PATH, 'w', encoding='utf-8') as f:
+    f.write('# someone put this here\n')
+spec_net('# spec v5\n')
+state3, note = m.refresh_spec(dict(m.UPDATE_STATE_DEFAULTS))
+check('T13 a list CC Tools never wrote is left alone',
+      'may be yours' in note, note)
+check('T13 and it survives',
+      'someone put this here' in open(SPEC_PATH, encoding='utf-8').read())
+
+# It writes to whichever accepted name is in use.
+clear_specs()
+alt = os.path.join(m.BASE_FOLDER, 'devices.md')
+with open(alt, 'w', encoding='utf-8') as f:
+    f.write('# old\n')
+seed = dict(m.UPDATE_STATE_DEFAULTS,
+            spec_sha=_h.sha256('# old\n'.encode()).hexdigest())
+spec_net('# spec v6\n')
+state4, note = m.refresh_spec(seed)
+check('T13 it updates devices.md when that is the name in use',
+      note == 'device list updated'
+      and open(alt, encoding='utf-8').read() == '# spec v6\n', note)
+check('T13 and does not create a second file',
+      not os.path.exists(SPEC_PATH))
+
+# A failed spec download must not raise or leave a temp file.
+clear_specs()
+spec_net(error='URLError: offline')
+state5, note = m.refresh_spec(dict(m.UPDATE_STATE_DEFAULTS))
+check('T13 a failed download is reported, not raised',
+      'could not be downloaded' in note, note)
+check('T13 and leaves no temporary file',
+      not os.path.exists(m.golden_path() + '.new'))
+clear_specs()
+
 clean()
 R.report_and_exit()

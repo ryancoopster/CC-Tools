@@ -164,13 +164,21 @@ Paste one short script. It downloads the rest itself.
 
 1. In Vectorworks: **Tools ▸ Plug-ins ▸ Plug-in Manager…**
 2. **New… ▸ Command**, name it `CC Tools`, set language to **Python**.
-3. **Edit Script…**, paste the whole of [`tools/stub.py`](tools/stub.py), then save.
+3. **Edit Script…**, click in the empty box, paste the whole of
+   [`tools/stub.py`](tools/stub.py) — GitHub has a copy button at the top right
+   of the file — then **OK**, and **OK** again to close the Plug-in Manager.
+   If it asks about restarting, **Continue Without Restart** is fine.
 4. **Tools ▸ Workspaces ▸ Edit Current Workspace ▸ Menus**, find **CC Tools** in
    the list on the left, and drag it into a menu on the right. **OK**.
+   *If it isn't in that list, restart Vectorworks and try this step again.*
 5. Pick **CC Tools** from that menu. It will offer to download itself — say yes.
 
-That is the whole install. There is no terminal, no download to unzip, and
-nothing to drag into a system folder.
+That is the whole install — five steps and about twenty clicks, once. There is
+no terminal, no download to unzip, and nothing to drag into a system folder.
+
+Step 4 is the one that cannot be automated, and the reason is worth knowing: a
+plug-in has to be in a menu before anything can run it, so it can never put
+itself there.
 
 What step 5 does: it fetches `cc_tools.py` and `JOB-SPEC.md` from this
 repository into `~/Documents/CC Tools/`, checks the program against the
@@ -217,6 +225,10 @@ Downloads are verified before they are installed — byte count, SHA-256, and
 whether the file compiles — and the version being replaced is kept alongside
 as `cc_tools.py.previous`. Both settings live in **Preferences**, which also
 shows when the last check ran and why it failed if it did.
+
+An update refreshes `JOB-SPEC.md` too, so everyone stays on the same device
+list — but **only if you have not edited it**. If you have, it is left exactly
+as it is and the update says so.
 
 ## Using it
 

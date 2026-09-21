@@ -113,6 +113,26 @@ def _write(path, text):
     os.replace(temporary, path)
 
 
+def _record_spec(digest):
+    """Note the device list we just wrote, in the program's update state."""
+    import json
+    path = os.path.join(BASE, 'update_state.json')
+    state = {}
+    try:
+        with open(path, 'r', encoding='utf-8') as handle:
+            loaded = json.load(handle)
+        if isinstance(loaded, dict):
+            state = loaded
+    except Exception:
+        state = {}
+    state['spec_sha'] = digest
+    try:
+        with open(path, 'w', encoding='utf-8') as handle:
+            json.dump(state, handle, indent=2)
+    except Exception:
+        pass
+
+
 def _download():
     """Fetch and verify CC Tools. Returns (ok, message)."""
     import hashlib
@@ -134,6 +154,22 @@ def _download():
     if len(expected) != 64:
         return False, ('The version file publishes no usable checksum, so '
                        'the download could not be verified.')
+
+    # A payload can require a newer loader than the one pasted here. Without
+    # this check an old loader would download it, run it, and fail somewhere
+    # arbitrary inside a program that assumes a contract this file does not
+    # honour -- which is a far worse failure than refusing up front.
+    try:
+        needs = int(manifest.get('min_stub') or 1)
+    except (TypeError, ValueError):
+        needs = 1
+    if needs > CC_TOOLS_STUB_VERSION:
+        return False, ('CC Tools %s needs a newer loader than the one '
+                       'installed here (it needs %d, this is %d).\n\n'
+                       'Copy tools/stub.py from the repository again and '
+                       'paste it over this script in the Plug-in Manager:\n'
+                       'https://github.com/%s/blob/%s/tools/stub.py'
+                       % (version, needs, CC_TOOLS_STUB_VERSION, REPO, BRANCH))
 
     data, error = _fetch(PAYLOAD_URL, 60.0)
     if error:
@@ -173,6 +209,11 @@ def _download():
             try:
                 os.makedirs(BASE, exist_ok=True)
                 _write(SPEC, spec.decode('utf-8'))
+                # Record what we wrote, the same way the program's own
+                # updater does. Without this it would later see a file it
+                # has no hash for, assume the user wrote it, and never
+                # refresh the device list again.
+                _record_spec(hashlib.sha256(spec).hexdigest())
             except Exception as err:
                 note = '\n\nJOB-SPEC.md could not be saved: %s' % err
 

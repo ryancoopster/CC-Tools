@@ -1,10 +1,10 @@
 {
-  "version": "0.9.2",
-  "bytes": 377813,
-  "sha256": "96c7406ec4e956c6105aa7c336c0abea631ad9951f97c70f2e0bde678eeba178",
+  "version": "0.9.3",
+  "bytes": 381503,
+  "sha256": "b76c9d3716f89daa27231d8400edd93e5b8231ea248d75cc861bd96f6bd78148",
   "min_stub": 1,
   "notes": [
-    "One-paste install: the loader now downloads CC Tools and JOB-SPEC.md itself on first run, verified against the published checksum",
-    "The loader falls back to the previous version if an update leaves a bad file"
+    "The device list refreshes with the program, unless you have edited it",
+    "Refuse a release that needs a newer loader than the one installed, instead of failing later"
   ]
 }
