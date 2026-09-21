@@ -6701,7 +6701,7 @@ def parse_device_db(text):
 
     Blocks are delimited by a non-empty make or model, and a device's own row
     also carries its first socket."""
-    devices = {}
+    blocks = {}
     current = None
     for line in text.split('\n'):
         if not line:
@@ -6713,12 +6713,33 @@ def parse_device_db(text):
         model = row[DB_MODEL].strip()
         if make or model:
             current = {'make': make, 'model': model, 'rows': []}
-            devices[(normalise_model(make), normalise_model(model))] = current
+            key = (normalise_model(make), normalise_model(model))
+            blocks.setdefault(key, []).append(current)
         if current is None:
             continue
         if row[DB_NAME].strip() or row[DB_CONN].strip():
             current['rows'].append(row)
-    return devices
+
+    # Seventeen pairs in the shipped database normalise to the same key -- the
+    # same product entered twice, written two ways ('BLU-50' and 'Blu50',
+    # 'Nano Patch+' and 'Nano Patch'). Keying them together is right, but
+    # letting the last one win is not: for three of them the survivor carries
+    # the shorter socket list, so a BSS Blu50 came back with 10 connectors
+    # instead of 12. The fuller list is the one worth keeping -- counted in
+    # sockets rather than rows, since one row can carry a quantity of twelve.
+    return {key: max(found, key=db_socket_count)
+            for key, found in blocks.items()}
+
+
+def db_socket_count(entry):
+    """How many sockets one database entry expands to."""
+    total = 0
+    for row in entry['rows']:
+        try:
+            total += max(1, min(int(row[DB_QTY].strip() or '1'), 128))
+        except ValueError:
+            total += 1
+    return total
 
 
 def load_device_db():
@@ -6756,10 +6777,12 @@ def db_socket_type(raw):
 def db_socket_specs(entry):
     """One database device's sockets, expanded, as builder specs.
 
-    A quantity of 4 becomes four sockets. The final name is stripped: 170 rows
-    carry a trailing space that would otherwise produce a socket name ending in
-    one -- and a trailing space is invisible on screen while making the name a
-    different string to everything that references it."""
+    A quantity of 4 becomes four sockets. The prefix and number are joined
+    verbatim, because 481 rows end their prefix with a deliberate space that
+    separates it from the number ('MIC ' -> 'MIC 1'). The result is then
+    stripped, so the 1-of-1 case does not end in that space -- a trailing space
+    is invisible on screen while making the name a different string to
+    everything that references it."""
     specs = []
     for row in entry['rows']:
         prefix = row[DB_NAME]

@@ -140,4 +140,34 @@ if paths:
 else:
     check('T6 skipped, Vectorworks not installed here', True)
 
+# ── T7: normalised-key collisions keep the fuller entry ───────────────────
+# The shipped database enters some products twice under two spellings. They
+# key to the same normalised pair, so one has to win -- and taking the last
+# one silently returned a short socket list for three real devices.
+COLLIDE = '\n'.join([
+    row('BSS', 'BLU-50', 'XLR3F', '12', 'L', 'IN ', 'LINE', 'IN'),
+    row('BSS', 'Blu50', 'XLR3F', '10', 'L', 'IN ', 'LINE', 'IN'),
+])
+merged = m.parse_device_db(COLLIDE)
+check('T7 the two spellings collapse to one entry', len(merged) == 1, merged)
+kept = list(merged.values())[0]
+check('T7 the fuller socket list survives', len(m.db_socket_specs(kept)) == 12,
+      '%d socket(s), model %r' % (len(m.db_socket_specs(kept)), kept['model']))
+
+REVERSED = '\n'.join([
+    row('BSS', 'Blu50', 'XLR3F', '10', 'L', 'IN ', 'LINE', 'IN'),
+    row('BSS', 'BLU-50', 'XLR3F', '12', 'L', 'IN ', 'LINE', 'IN'),
+])
+check('T7 and it survives whichever order the file lists them in',
+      len(m.db_socket_specs(list(m.parse_device_db(REVERSED).values())[0])) == 12)
+
+if paths:
+    for make, model, least in [('BSS', 'Blu50', 12),
+                               ('JBL', 'Nano Patch+', 6)]:
+        entry = real.get((m.normalise_model(make), m.normalise_model(model)))
+        check('T7 real %s %s keeps its full connector list' % (make, model),
+              entry is not None and len(entry['rows']) >= least,
+              '%r' % (entry and len(entry['rows'])))
+
+
 R.report_and_exit()

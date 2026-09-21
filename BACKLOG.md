@@ -1,228 +1,184 @@
 # Backlog
 
-Things asked for that aren't built yet, with enough context to pick up cold.
+Things asked for that aren't built yet, with enough context to pick up cold, and
+a record of things settled so they aren't revisited. Verified ConnectCAD
+internals live in [DESIGN.md](DESIGN.md).
 
-## Socket spacing — ConnectCAD's own rule
+## Open
 
-Layout is no longer hard-coded inches. ConnectCAD derives every distance from
-the **schematic grid** `(gx, gy)` times an integer count from Device Builder
-preferences: socket pitch is **one grid unit**, the first socket sits
-**(top space + 1) units** below the insertion point, minimum width is **6 grid
-spaces**. On a 0.25" grid that is exactly the 0.25" pitch and 0.5" first drop
-these drawings use — so the convention is ConnectCAD's default, expressed in
-inches, and deriving it keeps the drawings right while surviving a different
-grid.
+### PDF input with page selection
 
-The grid comes from the `ConnectCAD Settings...` record, falling back to the
-document grid preferences (selectors 78/79), then to a stated default. The
-Device Builder preference block itself is serialised on the Device record
-format and is **not reachable from script**, so the stock counts
-(min width 6, top 1, bottom 0, group gap 0) are constants here — a drawing
-whose Device Preferences differ needs them changed to match.
+A drawing set is mostly location plans; only the AV-4xx signal-flow sheets are
+worth sending. Each page costs roughly 5–9k input tokens as an image, so the
+user picks pages rather than submitting a whole file. Attaching a PDF to a chat
+already works — what is missing is any way to get the reply back automatically,
+which is the one thing the copy-paste route genuinely cannot do.
 
-## Build devices from symbols — done
+### Device label symbol is free text
 
-A ConnectCAD **device symbol** is a symbol definition holding one fully-built
-Device with its sockets already in the profile group. `place_device_from_symbol`
-is a port of `Utilities::PlaceObjectFromSymbol`: find the Device inside the
-definition, duplicate it onto the layer, copy across records the duplicate
-lacks, reset, position.
+The Preferences field is a text box, not a dropdown, because swapping the label
+goes through `Utilities::ChangeDevLabelSymbol` — reachable only from the OIP
+path, so a plain `SetRField` on `symbol` is not the whole operation and is
+unproven from script. A different label symbol also changes the header height,
+which socket placement measures, so the dropdown needs both facts settled.
 
-Stamping one computes **no layout at all** — no grid, no pitch, no header
-baseline — and matches house style by construction, because the symbol came from
-a device somebody drew by hand.
+ConnectCAD declares six in `cCADDeviceObj.vwstrings` (`dev_label_generic`,
+`EXT_L_label`, `EXT_R_label`, `TP_label`, `VDA_label`, `VJX_label`);
+`Libraries/Defaults/ConnectCAD/Device/Device Labels.vwx` indexes eight.
 
-`device_symbol_catalogue()` lists every device symbol in the document with the
-make and model of the Device inside it, and `find_device_symbol(make, model)`
-matches forgivingly on case, spaces, hyphens and underscores, since the same
-product is written `Galaxy 408`, `GALAXY-408` and `Galaxy_408` across a set.
+### Elbow stagger is inferred
 
-**To make a symbol:** build a device the way you want it, then *Save as Symbol…*
-in its Object Info palette.
+`ControlPoint03X` as the elbow distance comes from two samples in a real
+drawing. It matches both and nothing else obvious explains them, but it has not
+been read out of the binary or checked visually in a generated drawing. Worth
+confirming before relying on it for a dense fan-out.
 
-Device symbols live in the symbol folder **`zConnectCAD db Created`**, which is
-where ConnectCAD files the ones it builds from the database. The Resource
-Manager **root** holds device *parts* — jacks, terminals, patch points — which
-are Device plug-in objects too, so a root-only search returns the wrong things
-and misses every real device.
-
-Still to do:
-- Search ConnectCAD's shipped device libraries on disk, not just the open
-  document.
-- Fall back to the device database (`ConnectCAD Devices DB.txt`, ~17k rows) for
-  the socket list when no symbol exists, so a hand-built device still gets its
-  real connectors rather than invented ones.
-
-## Drawing preferences
-
-**Done.** `CC Tools > Preferences` writes `~/Documents/CC Tools/preferences.json`
-and covers column spacing, row spacing, section gap (0 by default), circuit line mode and the
-device label symbol. Spacing is in printed inches and is scaled by the layer.
-
-Still open: the label-symbol field is a free-text box, because the list of
-symbols ConnectCAD ships has not been confirmed against this install, and the
-header height a different label symbol produces would move every socket.
-
-Original note:
-
-Generated objects currently take whatever ConnectCAD defaults to. Two choices
-should be the user's, not the tool's:
-
-- **Circuit line mode.** The Circuit record's `CircuitType` field — a real job
-  uses `rounded`; `CC_CircuitFromShape` hard-codes `polyline`. Whatever a
-  generator draws should match the house style of the drawing it lands in.
-- **Device label symbol.** The Device record's `symbol` field is the *label*
-  symbol, not the body. ConnectCAD ships `dev_label_generic`, `EXT_L_label`,
-  `EXT_R_label`, `TP_label`, `VDA_label`, `VJX_label`.
-
-Both are per-drawing conventions, so they belong with the document profile
-rather than in a global settings file — the profile already reads
-`symbol` usage off the drawing, so the sensible default is "whatever this
-drawing already uses most", with an override.
-
-## Claude-powered generation
-
-Blocked on nothing technical now — the creation probe confirmed devices,
-sockets and wiring all work from script. Remaining pieces:
-
-- **PDF input with page selection.** A drawing set is mostly location plans;
-  only the AV-4xx signal-flow sheets are worth sending. Each page costs roughly
-  5–9k input tokens as an image, so the user picks pages rather than submitting
-  a whole file.
-- **Device database lookup.** `Libraries/Defaults/ConnectCAD/ConnectCAD_Database/
-  ConnectCAD Devices DB.txt` is tab-delimited, ~17k rows, and carries the real
-  socket set for each make/model. Looking a device up beats letting a model
-  invent its sockets.
-- **Layout is wiring.** `ConnectSelected` pairs sockets by horizontal alignment,
-  so a generator's job is placement, not netlisting.
-
-## Smaller things
+### Smaller
 
 - Move **Export Reference Schematic** and **Creation Probe** out of the main
-  launcher — they are setup and diagnostic tools, not everyday drafting ones.
+  launcher — setup and diagnostic tools, not everyday drafting ones.
 - The six unnamed power-distribution devices in the Geffen drawing are invisible
   to every tool that works on names. Naming them is a drawing task, but the
   tools could offer to.
+- Device Builder preference counts (min width 6, top 1, bottom 0, group gap 0)
+  are constants, because that preference block is serialised on the Device
+  record format and is **not reachable from script**. A drawing whose Device
+  Preferences differ needs them changed by hand.
 
+---
 
-## Verified ConnectCAD internals (2026-09-06)
+## Settled
 
-Established by disassembling `connectCAD.vwlibrary/Contents/MacOS/connectCAD`
-and reading the shipped data files. Each of these was checked against the
-primary source a second time by a separate pass, and several first attempts
-were wrong -- so treat anything NOT listed here as unverified.
+### Socket spacing comes from the grid
 
-**Circuit line mode.** `CircuitType` has exactly four legal values, all
-lowercase: `polyline` (ConnectCAD's default), `rounded`, `chamfer`, `arrow`.
-Bounded by a four-entry jump table in `ConnectTool_EventSink::GetCircuitType`.
-`SetRField` alone does nothing -- the value is consumed in the PIO reset
-handler, so `ResetObject` is required and sufficient. `CC_CircuitFromShape`
-does hard-code `polyline`, and does it with exactly SetParamString +
-ResetObject, so that sequence is sanctioned rather than a workaround.
+Not hard-coded inches. ConnectCAD derives every distance from the **schematic
+grid** `(gx, gy)` times an integer count: socket pitch is **one grid unit**, the
+first socket sits **(top space + 1) units** below the insertion point, minimum
+width is **6 grid spaces**. On a 0.25" grid that is exactly the 0.25" pitch and
+0.5" first drop these drawings use — so the convention is ConnectCAD's default
+expressed in inches, and deriving it survives a different grid.
 
-The first three share one computed route polygon and differ only in corner
-rendering. `arrow` is a different object -- paired stubs linked by
-`__Arrow_ID`, gated on `__SameLayer` -- so it must never be written onto an
-existing routed circuit.
+The grid comes from the `ConnectCAD Settings...` record, falling back to the
+document grid preferences (selectors 78/79), then to a stated default.
 
-**Circuits are auto-classed by signal.** `CC-Circuit-Signal-<SIGNAL>`, built in
-`CClassHandler::GetSignalClassIID`. It happens ONCE, gated on the hidden
-`__Version` parameter (reclass runs only while `__Version <= 2599`, then it is
-stamped 2600). After that first reset your own class, line weight and colour
-survive further resets. **Devices are not auto-classed** -- 61 SetObjectClass
-call sites and the device reset handler is not among them -- so a device's
-class is yours to set.
+### Devices are built from symbols first, database second
 
-This is very likely how a schematic gets divided by signal type: class
-visibility per viewport, not spatial regions. It would explain why the Geffen
-drawing has all 212 devices in one continuous field with no spatial banding.
+A ConnectCAD **device symbol** is a symbol definition holding one fully-built
+Device with its sockets already in the profile group. `place_device_from_symbol`
+ports `Utilities::PlaceObjectFromSymbol`: find the Device inside the definition,
+duplicate it onto the layer, copy across records the duplicate lacks, reset,
+position. Stamping one computes **no layout at all** — no grid, no pitch, no
+header baseline — and matches house style by construction.
 
-**Device label symbol.** The Device PIO declares six in `cCADDeviceObj.vwstrings`
-(`dev_label_generic`, `EXT_L_label`, `EXT_R_label`, `TP_label`, `VDA_label`,
-`VJX_label`); `Libraries/Defaults/ConnectCAD/Device/Device Labels.vwx` indexes
-eight symbols. The label is placed at device-local (0,0) with UNIFORM scale
-from the hidden `__gridScale` param. Swapping it is `Utilities::ChangeDevLabelSymbol`,
-which is reached only from the OIP/tool path -- so a plain `SetRField` on
-`symbol` is NOT the whole operation and is still unproven from script.
+`device_symbol_catalogue()` lists every device symbol in the document with the
+make and model inside it; `find_device_symbol()` matches forgivingly on case,
+spaces, hyphens and underscores, since the same product is written
+`Galaxy 408`, `GALAXY-408` and `Galaxy_408` across a set.
 
-**Device database.** `Libraries/Defaults/ConnectCAD/ConnectCAD_Database/ConnectCAD Devices DB.txt`,
-935,657 bytes, 24 tab-separated columns, **2,735 device records over 17,127
-lines** (the 17k figure is lines, not devices). A device owns a block: it
-starts where col0 or col1 is non-empty and runs to the next such row. Each
-following row is a socket SERIES, not one socket -- col15 is a quantity, and
-the suffix ConnectCAD appends is a single space then the number
-(`CDeviceDBHandler::DecodeSocket`). Col16 orientation is only ever `L` or `R`.
-Read it as bytes and split on `\r\n`: Python universal newlines corrupts it.
+Symbols live in **`zConnectCAD db Created`**. The Resource Manager **root** holds
+device *parts* — jacks, terminals, patch points — which are Device plug-in
+objects too, so a root-only search returns the wrong things and misses every
+real device. To make one: build a device by hand, then *Save as Symbol…* in its
+Object Info palette.
 
-A companion `SignalTypes.txt` (UTF-8, CRLF, 1 header + 79 rows) defines the
-signal vocabulary, and the DB's signals are a strict subset of it. Note the
-app and user copies use DIFFERENT line terminators.
+**The database fallback is built.** When no symbol exists, `db_socket_specs()`
+reads the real connector list out of `ConnectCAD Devices DB.txt` rather than
+letting a model invent one. Format details are in DESIGN.md — note especially
+that the number suffix is appended **verbatim**, so the trailing space in `MIC `
+is the author's separator and not an artefact to strip, and that seventeen
+make/model pairs collide once normalised and are merged by socket count.
 
-
-## How a schematic divides — settled
-
-Confirmed with Ryan, 2026-09-06, after two wrong guesses on my part.
-
-**Circuits carry the class; devices do not.** ConnectCAD files every circuit in
-`CC-Circuit-Signal-<SIGNAL>` and a sheet viewport filtered to one of those
-classes is that signal's drawing. Devices are never classed by signal, and the
-`CC-Device-*` classes ConnectCAD ships are not device classes at all — they are
-part classes for components INSIDE a device PIO (`CC-Device-Graphics`,
-`CC-Device-DisplayTag`, `CC-Device-Description`, `CC-Device-Location`,
-`CC-Device-PanelName`, `CC-Device-ExternalName`).
-
-So **the tool must not class devices**, and `apply_signal_class` is deliberately
-only ever called on circuits. Two wrong ideas that were considered and are
-recorded here so they are not revisited:
-
-- *Class devices by section.* Wrong — nothing in ConnectCAD does this, and a
-  device belongs on every sheet its circuits appear on.
-- *Drop spatial banding in favour of classes.* Wrong — they are not
-  alternatives. Classes divide the SIGNALS; the spatial regions are why a
-  device is drawn again in each section, so that each region has its own block
-  to attach its own circuits to.
-
-The Geffen drawing shows no GAPS between regions, which is what misled me
-into thinking there were no regions. Contiguous regions of a dense field are
-still regions; the drafter simply did not leave space between them. The
-`section_gap_inches` preference exists so generated work can, or need not.
-
-
-## The Claude API client — deleted
-
-`claude_request`, `load_claude_config`, `usage_totals`, `format_usage` and the
-first-run key prompt were defined and never called. No tool was ever wired to
-them, so none of it had run: not the key handling, not the usage log, not the
-cost accounting.
-
-Deleted 2026-09-06, 333 lines, on Ryan's call. It predated the copy-paste route
-and the copy-paste route turned out to be the better answer for this audience —
-no key, no account, no billing. Untested network code in a plug-in that edits
-live drawings is a liability, not an asset, and git remembers it.
-
-**If it is ever wanted back**, the case for it is the PDF-redraw path: attaching
-a PDF to a chat works, but nothing brings the reply back automatically. That is
-the one thing copy-paste genuinely cannot do. Recover it from history rather
-than rewriting it — but test it before trusting it, because it never was.
-
-
-## Stock symbol libraries — not searched, deliberately
-
-Investigated 2026-09-06 and abandoned on the evidence.
+### Stock symbol libraries are not searched, deliberately
 
 `/Applications/Vectorworks 2026/Libraries/ConnectCAD/Device/` holds 346 entries.
 **345 are 10-byte `.vwx.proxy` placeholders** — Luminex, Meyer, Shure, Crestron,
 Extron, all of them — containing nothing but a numeric id. Exactly one real file
-had been downloaded (`Crest.vwx`), and the user library folder held none.
-Vectorworks fetches these on demand through the Resource Manager.
-
-So a tool that searched them would, on a normal install, find one manufacturer.
+had been downloaded (`Crest.vwx`); the user library folder held none. Vectorworks
+fetches these on demand through the Resource Manager, so a tool that searched
+them would, on a normal install, find one manufacturer.
 
 Ryan's call, and the better design: **do not rely on stock symbols at all** —
-they are inconsistent between manufacturers even once downloaded. Look the
-device up instead, and keep the answer in a curated file so it stays consistent.
-That is the device list at the end of `JOB-SPEC.md`.
+they are inconsistent between manufacturers even once downloaded. Look the device
+up and keep the answer in a curated file so it stays consistent. That is the
+device list at the end of `JOB-SPEC.md`, which carries dimensions, weight, power
+draw, and rack mounting with rack U.
 
-Symbols already in the OPEN DOCUMENT are still used and still preferred. Those
-are house-made and demonstrably correct; the argument above is only about the
-stock libraries.
+Symbols already in the **open document** are still used and still preferred —
+house-made and demonstrably correct. The argument above is only about stock.
+
+### How a schematic divides
+
+Confirmed with Ryan, 2026-09-06, after two wrong guesses.
+
+**Circuits carry the class; devices do not.** ConnectCAD files every circuit in
+`CC-Circuit-Signal-<SIGNAL>` and a sheet viewport filtered to one of those
+classes is that signal's drawing. The `CC-Device-*` classes ConnectCAD ships are
+not device classes at all — they are part classes for components *inside* a
+device PIO (`-Graphics`, `-DisplayTag`, `-Description`, `-Location`,
+`-PanelName`, `-ExternalName`).
+
+So the tool must not class devices, and `apply_signal_class` is only ever called
+on circuits. Two wrong ideas, recorded so they aren't revisited:
+
+- *Class devices by section.* Wrong — nothing in ConnectCAD does this, and a
+  device belongs on every sheet its circuits appear on.
+- *Drop spatial banding in favour of classes.* Wrong — not alternatives. Classes
+  divide the **signals**; spatial regions are why a device is drawn again in each
+  section, so each region has its own block for its own circuits.
+
+The Geffen drawing shows no gaps between regions, which is what suggested there
+were none. Contiguous regions of a dense field are still regions; the drafter
+simply left no space. `section_gap_inches` exists so generated work can, or
+need not.
+
+### Alignment was never required — the staircase is gone
+
+An early note claimed `ConnectSelected` pairs sockets by horizontal alignment.
+**It does not** — the function contains no floating-point comparison at all, and
+a probe wired three circuits offset by 0.10", 0.85" and 1.60" without complaint.
+Pairing is by column membership and Y order; see DESIGN.md.
+
+An `align_to` mechanism and a staircase layout were built on the false premise
+and shipped. The staircase made nineteen circuits graze the device in the
+previous column and drawings four times wider than needed — 35" fell to 7" once
+removed. The note was inherited and never tested against the binary or a
+drawing, which is the whole lesson.
+
+### Drawing preferences
+
+`CC Tools > Preferences` writes `~/Documents/CC Tools/preferences.json`: column
+spacing, row spacing, section gap (0 by default), circuit line mode, device label
+symbol. Spacing is in printed inches and is scaled by the layer.
+
+### The Claude API client — deleted
+
+`claude_request`, `load_claude_config`, `usage_totals`, `format_usage` and the
+first-run key prompt were defined and never called. No tool was wired to them, so
+none of it had ever run: not the key handling, not the usage log, not the cost
+accounting. Deleted 2026-09-06, 333 lines, on Ryan's call.
+
+It predated the copy-paste route, and copy-paste turned out to be the better
+answer for this audience — no key, no account, no billing. Untested network code
+in a plug-in that edits live drawings is a liability, not an asset, and git
+remembers it. If it is ever wanted back, the case is the PDF path above; recover
+it from history rather than rewriting it, and test it before trusting it.
+
+### The audit — 23 findings, all fixed
+
+A six-dimension adversarial review of the whole plug-in, after find-and-replace
+was found to break links. Everything it caught is fixed and covered by tests; the
+structural lessons are written into DESIGN.md rather than repeated here. The
+themes, so the same classes of bug get looked for next time:
+
+- **Renames that write the field instead of calling the rename.** The stored
+  Device↔Equipment association survives a `SetRField` pointing at the old match.
+- **A second field holding the same name.** `PanelConnector` names its socket in
+  both `ConnectedSkt` and `SocketName`; syncing one is worse than syncing
+  neither, because it looks done.
+- **Objects `classify()` returned `None` for.** `Device-External` was invisible
+  to Search, Spell Check and Replace alike while carrying editable free text.
+- **Match keys that can be blank.** `""` matches every unnamed object.
+- **Scope that isn't the scope.** Socket names are unique per device, not per
+  document; equipment lives on layers the selection doesn't include.
+- **Failures with no output.** A licence-gated no-op, a one-column selection, an
+  unresolved reference — each previously did nothing and said nothing.

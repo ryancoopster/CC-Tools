@@ -1,156 +1,316 @@
 # CC Tools — design notes
 
-How ConnectCAD's linking actually works, why these tools are built the way they are, and what has and hasn't been verified. For what the plug-in does and how to install it, see the [README](README.md).
+How ConnectCAD actually behaves, why these tools are built the way they are, and
+what has and hasn't been verified. For what the plug-in does and how to install
+it, see the [README](README.md).
 
-Findings below come from dumping a real 203-device job and from disassembling the ConnectCAD plug-in binary; most of it is not documented publicly.
+Findings here come from dumping real jobs, from disassembling the ConnectCAD
+plug-in binary, and from probes run in a live drawing. Most of it is not
+documented publicly. **Where something is inferred rather than observed, it says
+so** — several confident-sounding claims in earlier versions of this file turned
+out to be wrong, and the ones that cost the most time were the ones stated
+without a source.
 
-**One plug-in**, `cc_tools.py`, installed as a single menu command named **CC Tools**. Running it opens a launcher where you tick **one or more** tools to run in sequence:
+**One plug-in**, `cc_tools.py`, installed as a single menu command named
+**CC Tools**. Running it opens a launcher where you tick one or more tools,
+which always run in a fixed order whatever order you tick them.
 
-| Tool | What it does |
-|---|---|
-| **Dump Fields** | Diagnostic. Read-only. Run after any ConnectCAD update. |
-| **Normalise Names** | Uppercase and/or trim names & tags, keeping every name link intact. |
-| **Match Names and Display Tags** | Finds Name ≠ Display Tag and lets you pick which wins. |
+| | Tool | |
+|---|---|---|
+| *drafting* | Normalise Names | uppercase / trim, links kept intact |
+| | Match Names and Display Tags | reconcile Name vs Display Tag |
+| | Spell Check | typos and reviewable find-and-replace |
+| | Search ConnectCAD Objects | read-only, every field |
+| | Find and Replace | writes, with a review table |
+| | Reconcile Panel Connectors | after renaming in the OIP |
+| | Draw schematic job | build a schematic from JSON |
+| *setup* | Preferences | spacing, line mode, label symbol |
+| | Export prompt for Claude | document profile |
+| | Dump Fields | read-only diagnostic |
+| | Export Reference Schematic | read-only, drawing as JSON |
+| | Creation Probe | writes — scratch files only |
 
-Each tool still shows its own options dialog; one combined summary appears at the end.
-
-All output goes to `~/Documents/CC Tools/` under **timestamped filenames**.
-
-### Run order is fixed: Dump → Normalise → Match
-
-Tick order doesn't matter — they always run in that sequence, because **normalising first does real work for you**. Uppercasing and trimming collapses every case-only and whitespace-only mismatch (`amp1` vs `AMP1`, `"PROC 2.02 FF "` vs `"PROC 2.02 FF"`), so Match only asks about pairs that genuinely differ. Run it the other way and you'd hand-answer a pile of prompts that Normalise resolves for free.
-
-**A tool that stops halts the chain.** If Normalise refuses to run — a name collision, an unresolved field, an error mid-write — Match is not run, and the summary says so. Whatever tripped it needs looking at before another tool touches the same drawing. Merely *cancelling* a tool's dialog is different: the chain continues to the next one.
+All output goes to `~/Documents/CC Tools/` under timestamped filenames.
 
 ### Why one file
 
-Vectorworks creates one `.vsm` per menu command — there is no multi-command plug-in. Shipping the three tools as three commands meant duplicating ~300 lines of shared engine (record readers, document walk, `classify`, the collision logic), so every fix had to land twice and the copies would inevitably drift. The launcher keeps them as one plug-in with one copy of the engine.
+Vectorworks creates one `.vsm` per menu command — there is no multi-command
+plug-in. Shipping these as separate commands would duplicate the whole engine
+(record readers, document walk, `classify`, link planning, collision checks) so
+every fix had to land many times and the copies would drift. The launcher keeps
+one plug-in with one copy of the engine.
 
-Cost: one extra click per run, and no per-tool keyboard shortcuts.
+Cost: one extra click, and no per-tool keyboard shortcuts.
+
+### Run order is fixed
+
+Reconcile → Search → Dump → Preferences → Replace → Normalise → Match → Spell →
+Reference → Probe → Prompt → Job.
+
+The order encodes dependencies. Reconcile first, so later tools read references
+that are current. Preferences before Draw job, so a job is drawn with settings
+just saved. Normalise before Match, because uppercasing and trimming collapses
+every case-only and whitespace-only mismatch (`amp1` vs `AMP1`), leaving Match
+to ask only about pairs that genuinely differ. Spell Check last, once every name
+has settled.
+
+**A tool that stops halts the chain** — a collision, an unresolved field, an
+error mid-write — and the summary says what never ran. Merely *cancelling* a
+dialog is different: the chain continues.
 
 ---
 
 ## The constraint everything is built around
 
-Most ConnectCAD links are **by name string** — rename one side and the others silently unlink. The diagnostic's name-reference scan found **five** link sites in the reference job, not the one originally assumed:
+Most ConnectCAD links are **by name string**. Rename one side and the others
+silently unlink. The diagnostic's reference scan found these:
 
-| Holder | Field | Points at | Count in the reference job |
-|---|---|---|---|
-| `EquipItem` | `name` | Device name | 17 matched |
-| `PanelLayout` | `DeviceName` | Device name | 2 |
-| `PanelConnector` | `ConnectedDev` | Device name | 66 |
-| `PanelConnector` | `ConnectedSkt` | Socket name | 82 objects |
-| `Circuit` | `Src/Dst_Dev_Name`, `Src/Dst_Skt_Name` | cached | 337 |
+| Holder | Field | Points at |
+|---|---|---|
+| `EquipItem` | `name` | Device name |
+| `PanelLayout` | `DeviceName` | Device **name or tag** |
+| `PanelConnector` | `ConnectedDev` | Device **name or tag** |
+| `PanelConnector` | `ConnectedSkt` | the socket it is **wired to** |
+| `PanelConnector` | `SocketName` | the socket it **represents** |
+| `PanelConnector` | `DisplayTag` | label; mirrors `SocketName` until customised |
+| `Circuit` | `Src/Dst_Dev_Name`, `_Skt_Name`, `_Dev_Tag` | caches, refreshed on reset |
+
+**A PanelConnector names its socket twice**, and the two are not
+interchangeable. A real drawing was found carrying the name in `SocketName` and
+`DisplayTag` with `ConnectedSkt` *empty*, so a sync that followed only
+`ConnectedSkt` left every panel connector pointing at a name that no longer
+existed — silently, because the field it checked was blank and matched nothing.
+
+**A device tag is a reference target too.** `ConnectedDev` holds either the name
+or the tag, so tag edits carry a sync of their own. Names are consulted first: a
+value that *is* a device name means that device, whatever else it may
+coincidentally equal.
 
 ### Except Device ↔ Equipment, which is a stored reference
 
-`CC_GetEquipmentItem(hDevice)` resolves a **persisted association** — a ref number in the object's tagged data — with no string comparison anywhere. Names are only the bootstrap key ConnectCAD uses to *form* the link.
+`CC_GetEquipmentItem(hDevice)` resolves a **persisted association** — a ref
+number in tagged data — with no string comparison anywhere. Names are only the
+bootstrap key ConnectCAD uses to *form* the link.
 
-Earlier versions of these tools inferred that link from name equality. That is wrong in a way that bites precisely where it hurts: with two devices named `SWTCH 4.01`, only one is actually associated with a given equipment item, but name matching claims both — so renaming one device could rename the *other* one's equipment. The reference job has 14 duplicate-name groups, so this was live, not theoretical.
+Inferring that link from name equality is wrong where it hurts: with two devices
+named `SWTCH 4.01` only one is truly associated, but name matching claims both.
+The sync asks ConnectCAD instead, and falls back to name matching only when the
+routine is unavailable — saying so in the report rather than guessing quietly.
 
-The sync now **asks ConnectCAD** what is linked. If the routine is unavailable (no ConnectCAD licence, or an older build), it falls back to name matching and the report says so in as many words rather than quietly guessing. Run **Dump Fields** to see which path a given setup takes — the API probe reports it, along with every device where the two methods disagree.
+### Renaming is not a field write
 
-Everything else in the table above genuinely *is* keyed on strings, so name matching stays correct there.
+**`CC_OnFindAndReplace` is the supported rename**, the same code path as typing
+in the OIP Name field. A plain `SetRField` writes the string and leaves the
+stored association pointing at whatever it used to match, so a device renamed by
+script kept a link the interface would have broken and never gained the one it
+should have.
 
-All are synced. Circuits are caches, refreshed by resetting every circuit after a rename.
+The two sides behave **differently**, which is why order matters:
 
-Safety properties, all exercised by the test suite:
+- **Device** → `UpdateDeviceLocation`. *Severs* a stale association and clears
+  location data. It contains no association call at all — it only breaks.
+- **EquipItem** → `OnEquipNameChange` → `FindAndUpdateDevices`. The only routine
+  that *forms* the link: looks devices up by the equipment's **new** name,
+  associates one, copies room, rack and rack-U across.
 
-- **Plan → check → write.** Nothing is written until every edit is planned and the collision check passes, so an abort leaves the drawing untouched.
-- **Whole-document link resolution**, even when scope is "selected objects only".
-- **All writes precede all resets**, and sockets reset *after* their parent Device so a parent reset can't discard child edits.
-- **Blank is never written over a name, and never used as a match key.** `""` as a lookup key would match every unnamed object and rename them all.
-- **Sentinels are never touched** — `<EXT>`, `<DEVICE>`, `---` are placeholders, not names.
-- **Socket names are scoped per device** — same socket name in two different devices is fine; twice in one device is blocked.
+So **devices are renamed before equipment**. An earlier version had it the other
+way round, on the assumption that the device side re-formed the link; the pair
+was disassociated and never put back together.
 
-### Field reference — confirmed by dumping a real job
+The routine is a silent no-op without a ConnectCAD licence, so the value is read
+back rather than assumed, a plain write is the fallback, and every report says
+how many renames fell back and what that means for their links.
 
-| Object | Record | Name field | Tag field |
-|---|---|---|---|
-| Device | `Device` | `name` | `tag` |
-| Socket | `Socket` | `name` | `tag` |
-| Equipment Item | `EquipItem` | `name` | *(none)* |
-| Panel Connector | `PanelConnector` | `SocketName` | `DisplayTag` |
-
-Note ConnectCAD's own inconsistency: `Socket` uses lowercase `name`/`tag`, `PanelConnector` uses `SocketName`/`DisplayTag`. Both are handled.
-
-**`Device-External` is not a device.** Its `name` is always the literal `<EXT>`, and the reference scan confirmed it never holds a device name. It is left alone — renaming it would corrupt a sentinel for no benefit.
-
-### Duplicate device names are allowed
-
-Multiple devices sharing a name is normal here — the same physical device drawn in several places — so **nothing blocks on it**. Duplicates are reported, never refused, and the report marks which ones this run created (`NEW`) versus which already existed.
-
-This is safe now in a way it wasn't before: since Device↔Equipment resolves through ConnectCAD's stored association, a shared name no longer drags the wrong equipment item along. Worth knowing that `PanelConnector`, `PanelLayout` and circuit caches still reference devices *by name*, so a reference to a duplicated name can't say which object it means — and ConnectCAD's own error checker flags duplicates (`DuplicateDevice`).
-
-**One case still stops the run:** two sockets on the *same* device converging on one name. A circuit addresses a socket by name within its device, so identically named sockets on one device are genuinely unaddressable. That's a different thing from two devices sharing a name, and sockets are off by default, so it should rarely fire.
-
-### Unnamed devices — `<DEVICE>`
-
-ConnectCAD parks an **unnamed** device's `name` field at the literal string `<DEVICE>`. In the Geffen Hall file that is **101 of 203 devices**. Two consequences:
-
-- **They are offered, not dropped.** A device with no name but a real Display Tag is exactly the one worth naming, so Match lists it. *Include objects with a blank or `<DEVICE>` side* is **on by default** — it was off originally, which made a working tool look broken. That's safe as a default because the default *action* is "Export list only", which changes nothing. Untick it and the tool still reports how many it skipped, rather than claiming a clean run.
-- **A device with neither a name nor a tag is left alone.** There is nothing to copy from. In the Geffen Hall file only 1 of the 101 unnamed devices had a Display Tag, so a correct run changes exactly one device — which looks like failure but isn't.
-- **`<DEVICE>` is never a link key.** Renaming one device away from `<DEVICE>` must not drag the partners of the other hundred along with it. `is_unnamed()` treats the placeholder and the empty string identically everywhere: link maps, sync matching, and collision counting all refuse it. 101 devices sharing `<DEVICE>` is 101 blanks, not a duplicate-name collision.
-
-The tools also never *write* `<DEVICE>` onto a device that currently has a real name.
-
-### Behaviour worth understanding
-
-**Normalising can create links that didn't exist.** Device `amp1` and equipment `AMP1` are currently *unlinked* — the strings differ. After uppercasing both become `AMP1` and link up. That's the repair you want, but it's a real structural change. Fuzzing confirms names differing by more than case/whitespace never merge.
-
-**Duplicates never block.** The reference job has four devices named `"A/V Circuit "`. They normalise together to the same new name — still duplicates, no worse than before — and the run proceeds and reports them.
-
-**Whitespace.** In the reference job, 18 names/tags carry stray spaces. Both sides of a pair usually carry the same one, so links still work — it's fragile, not broken. The trim option fixes both sides together.
+**It also mirrors the Display Tag** onto the new name whenever tag equals name —
+the usual case. Where the user asked for that it is recorded as an applied edit;
+where they deliberately left the tag row unticked, it is put back.
 
 ---
 
-## Install
+## Sentinels
 
-Once, in Vectorworks 2026:
+`<DEVICE>`, `<EXT>`, `<SOCKET>` and `---` are placeholders, not names.
+`is_unnamed()` treats them and the empty string identically everywhere: link
+maps, sync matching and collision counting all refuse them. In one real file
+**101 of 203 devices** sit at `<DEVICE>` — that is 101 blanks, not a
+duplicate-name collision, and renaming the sentinel would give every one of them
+the same name.
 
-1. **Tools ▸ Plug-ins ▸ Plug-in Manager…**
-2. **New… ▸ Command**, name it **CC Tools**, language **Python**.
-3. **Edit Script…**, paste the *entire* `cc_tools.py` — including the final `run_cc_tools()` line, which is what actually runs it — then save.
-4. Add it to your workspace: **Tools ▸ Workspaces ▸ Edit Current Workspace ▸ Menus**.
-
-If you previously installed `CC Dump Fields`, `CC Uppercase Names` or `CC Match Names and Tags` as separate commands, delete them in Plug-in Manager — they are superseded.
+**`Device-External` is not a device, but it is not nothing.** Its `name` really
+is always `<EXT>` and must never be renamed. But its **tag** carries the off-page
+endpoint label — `To SWTCH 2.01 2nd Floor Pri` — which is free text someone
+typed. `classify()` returned `None` for it, which hid it from Search, Spell Check
+and Find and Replace alike, so a rename pass updated every Device, Socket,
+EquipItem and PanelConnector and left these reading the old name. It now has its
+own kind with the tag editable and the sentinel still untouchable.
 
 ---
 
-## Using them
+## How wiring actually works
 
-Both tools default to **Selected objects only**, so nothing happens document-wide unless you ask for it. Link partners are still resolved across the **whole document** either way — a selection-scoped run never leaves an equipment item, panel or connector holding a stale name.
+Read out of `ConnectSelected_EventSink::ConnectDevices`, and confirmed by a
+probe in a live drawing.
 
-**Normalise Names** — defaults to *Devices only*, *uppercase + trim*, *sync on*, **Preview off** (it applies). Preview used to default on, which meant a Normalise+Match batch quietly previewed the first half and committed the second. Tick *Preview only* to get a report of what would change without touching anything; the summary then leads with `PREVIEW ONLY - NOTHING WAS CHANGED` so it can't be missed. Sockets are off by default; there are 1,942 of them, so preview that separately before committing.
+**Sockets do not need to be at the same height.** The function contains no
+floating-point comparison at all. A probe wired three circuits offset by 0.10",
+0.85" and 1.60"; ConnectCAD drew each with a clean elbow. An `align_to`
+mechanism and a staircase layout were built on the opposite belief, inherited
+from an early note and never tested — the staircase made every fan-out circuit
+graze the device in the previous column and drawings four times wider than
+needed.
 
-Note the remaining asymmetry: **Normalise applies by default, Match does not.** Match's default action is *Export list only*, spelled out in the dropdown, because "which side wins" is a judgement call the tool shouldn't make for you.
+**The real gate is X.** Selected devices are grouped into columns by
+`DoBoundsIntersectOnX`, which compares bounding boxes with `<=` — touching edges
+count as one column. If the whole selection resolves to **one** column, wiring is
+skipped and an interactive tool is silently activated instead: nothing drawn,
+nothing reported. The draw path checks for this before starting.
 
-**Match Names and Display Tags** — defaults to *Devices only*, *include `<DEVICE>`/blank on*, **Export list only**, which writes a CSV with `Differs only by case` and `One side unnamed` columns. Then re-run with a real action:
+**Pairing is positional.** Within a column, devices sort by bounding-box centre Y
+descending and sockets likewise; the Nth source socket takes the Nth still-free
+destination. **Socket names in a job are never consulted.** So the order a job
+lists a device's circuits in, and the order its targets are stacked, decide which
+socket each circuit lands on — get it wrong and every circuit is still made, onto
+the wrong sockets, which is harder to notice than a missing one.
 
-- *Set Display Tag = Name* — link-safe
-- *Set Name = Display Tag* — renames devices, resyncs all five link sites
-- *Review one at a time* — **Use Name / Skip / Use Tag / Stop**. Stop abandons the run; it does not commit answers already given.
+Source sockets must be orientation `R`; destinations must not be. `side` is
+therefore graphical, not electrical: the same IO port is `R` where it feeds and
+`L` where it receives.
+
+### Circuits
+
+`CircuitType` has exactly four values, lowercase: `polyline` (ConnectCAD's
+default), `rounded`, `chamfer`, `arrow` — bounded by a four-entry jump table.
+Two values offered by an earlier build, `direct` and `orthogonal`, do not exist;
+they were invented from plausibility. **Do not write a ConnectCAD enum value you
+have not read out of the binary or a real drawing.**
+
+The first three share one computed route polygon and differ only in corner
+rendering. `arrow` is a structurally different object — paired stubs linked by
+`__Arrow_ID` — so it is never offered as a line mode and never written over an
+existing routed circuit.
+
+Setting the field alone does nothing; the value is consumed in the reset handler,
+so `ResetObject` is required and sufficient.
+
+**Circuits are auto-classed** `CC-Circuit-Signal-<SIGNAL>`, but only once, gated
+on a hidden `__Version` parameter. `ConnectSelected` creates *and* resets the
+circuit, so by the time a script writes a signal that gate has closed and the
+class is wrong — the tool sets it explicitly, after the reset. Devices are never
+auto-classed.
+
+**Elbows all turn at the same distance by default**, so a fan-out into a stacked
+column draws its vertical runs on top of one another. Real drawings stagger
+`ControlPoint03X` per circuit; the tool does the same. *Inferred* from two
+samples — consistent with them and with nothing else obvious, but not confirmed
+against the binary.
+
+---
+
+## Where device data comes from
+
+In order: a **device symbol** in the open document (someone drew it, sockets
+placed); the **sockets a job lists**; the **curated list** at the end of
+`JOB-SPEC.md`; ConnectCAD's **shipped database**.
+
+Stock manufacturer symbol libraries are deliberately *not* searched. Of 346 in
+`Libraries/ConnectCAD/Device/`, **345 are 10-byte `.vwx.proxy` placeholders**
+fetched on demand; exactly one had been downloaded. A tool that searched them
+would find one manufacturer.
+
+The shipped database is `ConnectCAD Devices DB.txt` — 24 tab-separated columns,
+**2,735 device blocks over 17,127 lines**, no header row, CRLF, UTF-8 with BOM.
+Read it as bytes: text mode mangles it. A device owns a block of rows; each row
+is a socket *series* whose quantity expands with the number appended **verbatim**
+to the prefix — 481 rows carry a deliberate trailing space (`MIC ` → `MIC 1`)
+while 16,646 do not (`HDV_OUT` → `HDV_OUT1`).
+
+Seventeen blocks collide once make and model are normalised: the same product
+entered twice under two spellings. They are merged, keeping whichever entry
+expands to more sockets — taking the later one, as an earlier build did, gave
+the BSS Blu50, the JBL Nano Patch+ and a Teranex Mini a short connector list. It also uses `LOOP` and `IOloop`
+where `Socket.type` takes only `IN`/`OUT`/`IO`; both are bidirectional and map to
+`IO`.
+
+`SignalTypes.txt` defines the signal vocabulary. Ten of its 80 rows are **category
+headings** marked with `=`, not signals. The user's own copy uses bare CR line
+endings where the application copy uses CRLF — splitting on CRLF alone reads it
+as empty and makes every custom signal look invented.
+
+---
+
+## What cannot be done
+
+**There is no background execution.** No timer, no idle handler, no
+document-level event hook, no modeless dialog in the VectorScript API. (The
+timer-looking symbols in the binary belong to ImageMagick.) Observing another
+vendor's plug-in object requires the C++ SDK — which is how ConnectCAD itself is
+built. A menu command runs once and exits.
+
+This matters because ConnectCAD does not push a schematic socket rename out to
+the panel connectors pointing at it, and a rename typed into the OIP happens
+where no tool can see it.
+
+**Poll and diff is the only route**, and it works because identity is available:
+`GetObjectUuid` gives every plug-in object a persistent id. Reconcile Panel
+Connectors records each socket's uuid and name; a uuid whose name has changed is
+a rename — *known*, not inferred from the names, which is the one thing that
+cannot work here since a PanelConnector holds no stable reference to its socket,
+only the name as a string.
+
+The snapshot records the **last reconciled state, not the last observed one**. It
+refreshes at the end of every run, but a socket whose name has drifted from its
+record is outstanding work and its entry is left alone — advancing it on an
+unrelated run would erase the only evidence the rename happened. A rename is
+settled only once every reference to the old name has been updated.
+
+---
+
+## Safety properties
+
+All exercised by the test suite:
+
+- **Plan → check → write.** Nothing is written until every edit is planned and
+  the checks pass, so an abort leaves the drawing untouched.
+- **Whole-document link resolution**, even when scope is "selected objects only"
+  — equipment lives on rack layers while devices live on schematic layers.
+- **All writes precede the resets**, and sockets reset *after* their parent so a
+  parent reset cannot discard child edits. (ConnectCAD's own rename resets the
+  object itself; that is fine for a Device or EquipItem, neither of which has
+  child edits here.)
+- **Blank is never written over a name, and never used as a match key.** `""` as
+  a key would match every unnamed object and rename them all.
+- **Socket names are scoped per device.** The same name on two devices is fine;
+  twice on one device is reported — a reference to it can no longer say which it
+  means.
+- **Duplicate device names never block.** The same physical device drawn in
+  several places is normal. They are reported, and the report marks which this
+  run created.
+- **Nothing is written that the user has not seen**, in the tools that show a
+  review table.
 
 ---
 
 ## Verification status
 
-Executed against a mock `vs` module:
+**915 tests** against a mock `vs` module, plus randomised documents: no silent
+unlink, no fabricated link, references still resolve, every duplicate reported,
+idempotence, sentinel preservation. Dialog defaults are asserted through the real
+handlers, so changing one breaks a test.
 
-- **18 targeted cases** — socket sync, PanelConnector sync, sentinels, trim, per-device socket scoping, blank keys, pre-existing duplicates.
-- **15 launcher integration cases** — multi-tool sequencing, normalise-before-match ordering, halt-on-stop, continue-on-cancel, single-tool summary.
-- **14 unnamed-device cases** — `<DEVICE>` offered rather than dropped, never used as a link key, never written over a real name, 101 unnamed devices not counted as a collision.
-- **14 preview / defaults cases** — preview issues zero writes, preview says so loudly, and every dialog default is asserted through the real handler so changing one breaks a test.
-- **14 association cases** — with two devices sharing a name, only the truly-linked equipment item follows; a drifted partner is still found via the stored link; an empty association store reads as "unavailable" rather than "nothing is linked"; panel connectors still resolve by name.
-- **2,500 randomised documents** — no silent unlink, no fabricated link, panel and connector refs still resolve, every duplicate reported rather than silent, idempotence, sentinel preservation.
+Confirmed in a live drawing: device and socket creation, socket placement,
+`ConnectSelected` wiring, circuits reading back with correct endpoints, the
+file dialog, the job path end to end, and that alignment is not required.
 
-All pass. Every `return` in the three tool entry points is also statically checked to be a 2-tuple, since a stray bare `return` would crash the launcher's unpacking.
+Still unverified against a live document:
 
-That covers the *logic*, not the *Vectorworks API*. Still unverified against a live document:
-
-- **Undo** — whether Cmd+Z reverts a run as one event depends on the Plug-in Manager's undo setting.
-- **Circuits** actually re-deriving cached names after `ResetObject`.
-- **Socket writes surviving** a parent Device reset. Sockets reset last to avoid this, but it needs a real check — preview first, then test on a copy.
+- **Undo** — whether one run reverts as a single event depends on the Plug-in
+  Manager's undo setting.
+- **`ControlPoint03X`** as the elbow distance — inferred from two samples.
+- **The device label symbol.** Swapping it goes through
+  `Utilities::ChangeDevLabelSymbol`, reachable only from the OIP path, so a
+  plain `SetRField` on `symbol` is not the whole operation. Left as free text
+  rather than a dropdown for that reason — and because a different label symbol
+  changes the header height, which socket placement measures.
 - **`AlertQuestion` button mapping** — review mode assumes `1 / 0 / 2 / 3`.
 
-Work on a copy until you've seen a preview report you agree with.
+Work on a copy until you have seen a preview or a report you agree with.
